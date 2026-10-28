@@ -120,7 +120,9 @@ type LabelValuePair = {
  * Extract label-value pairs from raw HTML using Cheerio, preserving table relationships.
  */
 function extractPairsFromHtml(html: string): LabelValuePair[] {
+  console.log(html)
   const $ = load(html);
+
   const pairs: LabelValuePair[] = [];
 
   /**

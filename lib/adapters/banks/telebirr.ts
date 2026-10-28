@@ -86,8 +86,8 @@ const DEFAULT_TIMEOUT_MS = 20_000;
  * We additionally require at least one digit and reject ordinary labels.
  */
 const REFERENCE_TOKEN_RE = /\b[A-Z0-9]{10}\b/gi;
-const TELEBIRR_REFERENCE_RE = /^(?:D[A-Z][A-Z0-9]{8})$/i;
-
+// Telebirr reference codes start predominantly with C or D, followed by alphanumeric characters.
+const TELEBIRR_REFERENCE_RE = /^[CD][A-Z0-9]{9}$/i;
 export const REFERENCE_STOP_WORDS = new Set([
   'CLOUDFLARE',
   'SUCCESSFUL',
@@ -251,8 +251,8 @@ function lineValueAfterLabel(text: string, labels: string[]): string | null {
   return null;
 }
 
-export function extractReference(text: string): string | null {
-  const labelled = lineValueAfterLabel(text, [
+function extractReference(text: string): string | null {
+  const labels = [
     'Transaction Number',
     'Transaction No',
     'Transaction Reference',
@@ -261,24 +261,51 @@ export function extractReference(text: string): string | null {
     'Reference',
     'የደረሰኝ ቁጥር',
     'የግብይት ቁጥር',
-  ]);
+  ];
 
-  const labelledMatches = labelled?.match(REFERENCE_TOKEN_RE) ?? [];
-  for (const candidate of labelledMatches) {
-    if (isValidTelebirrReference(candidate)) return upper(candidate);
-  }
+  const lines = String(text ?? '')
+    .replace(/\r/g, '\n')
+    .split(/\n+/)
+    .map(clean)
+    .filter(Boolean);
 
-  const allMatches = text.match(REFERENCE_TOKEN_RE) ?? [];
-  // Prefer the known D + letter + 8-character Telebirr format.
-  for (const candidate of allMatches) {
-    if (isValidTelebirrReference(candidate) && TELEBIRR_REFERENCE_RE.test(candidate)) {
-      return upper(candidate);
+  // Strategy 1: Check inline label-value pairs
+  for (const line of lines) {
+    for (const label of labels) {
+      const regex = new RegExp(`${escapeRegExp(label)}[\\s:#\\-]*([A-Z0-9]{10})\\b`, 'i');
+      const match = line.match(regex);
+      if (match?.[1] && isValidTelebirrReference(match[1])) {
+        return upper(match[1]);
+      }
     }
   }
 
-  // Fallback for other valid 10-character provider formats (must have digit and not stop word).
-  for (const candidate of allMatches) {
-    if (isValidTelebirrReference(candidate)) return upper(candidate);
+  // Strategy 2: Check adjacent lines below label (handles columnar OCR)
+  for (let i = 0; i < lines.length; i++) {
+    const isLabel = labels.some((l) => new RegExp(`^${escapeRegExp(l)}[\\s:#\\-]*$`, 'i').test(lines[i]));
+    if (isLabel) {
+      for (let j = i + 1; j <= Math.min(i + 3, lines.length - 1); j++) {
+        const tokenMatch = lines[j].match(/\b([A-Z0-9]{10})\b/i);
+        if (tokenMatch?.[1] && isValidTelebirrReference(tokenMatch[1])) {
+          return upper(tokenMatch[1]);
+        }
+      }
+    }
+  }
+
+  // Strategy 3: Search whole text prioritizing Telebirr starting formats (C... or D...)
+  const allTokens = (text.match(REFERENCE_TOKEN_RE) ?? []).map(upper);
+  for (const token of allTokens) {
+    if (isValidTelebirrReference(token) && TELEBIRR_REFERENCE_RE.test(token)) {
+      return token;
+    }
+  }
+
+  // Strategy 4: Fallback to any valid 10-char reference
+  for (const token of allTokens) {
+    if (isValidTelebirrReference(token)) {
+      return token;
+    }
   }
 
   return null;
@@ -291,62 +318,31 @@ function isFeeOrVatText(value: string): boolean {
 }
 
 function amountFromLine(line: string): number | null {
-  const cleanLine = String(line ?? '').replace(/,/g, '').trim();
-
-  // Replace common OCR character substitutions for digits when adjacent to numbers or decimals
-  const normalized = cleanLine
-    .replace(/[−–—]/g, '-')
-    .replace(/(?<=\d)[Oo]|[Oo](?=\d)/g, '0')
+  // Normalize dashes (hyphen, en-dash, em-dash, minus sign)
+  const normalized = String(line ?? '')
+    .replace(/[\u2010-\u2015\u2212]/g, '-')
+    .replace(/,/g, '')
     .trim();
 
-  /*
-   * Supports:
-   * 101.00 ETB
-   * -101.00 ETB
-   * −101.00 (ETB)
-   * -101.00 (ETE)
-   * 101.00 (Birr)
-   * ETB 101.00
-   * (ETB) 101.00
-   * (ETE) 101.00
-   */
+  // Pattern matching: optional minus, digits with optional decimals, optional spaces/parens, currency
   const CURRENCY_PATTERN = '(?:ETB|ETE|ET8|ETP|ETR|ETD|EIB|ELB|E1B|FTB|BTB|Birr|B1rr|ብር|ብ|ET)';
 
-  // Currency after number: -101.00 (ETE) or 101.00 ETB
-  const matchAfter = normalized.match(
-    new RegExp(`[-+]?\\s*(\\d+(?:\\.\\d{1,2})?)\\s*(?:\\(\\s*)?${CURRENCY_PATTERN}(?:\\s*\\))?`, 'i')
+  // Case 1: -302.00 (ETB) or 8008.00 ETB
+  const afterMatch = normalized.match(
+    new RegExp(`[-+]?\\s*([0-9]+(?:\\.[0-9]{1,2})?)\\s*(?:\\(\\s*)?${CURRENCY_PATTERN}(?:\\s*\\))?`, 'i')
   );
-
-  if (matchAfter?.[1]) {
-    const amount = Number(matchAfter[1]);
-    if (Number.isFinite(amount) && amount > 0) {
-      return Math.abs(amount);
-    }
+  if (afterMatch?.[1]) {
+    const val = parseFloat(afterMatch[1]);
+    if (Number.isFinite(val) && val > 0) return val;
   }
 
-  // Currency before number: (ETE) -101.00 or ETB 101.00
-  const matchBefore = normalized.match(
-    new RegExp(`(?:\\(\\s*)?${CURRENCY_PATTERN}(?:\\s*\\))?\\s*[-+]?\\s*(\\d+(?:\\.\\d{1,2})?)`, 'i')
+  // Case 2: (ETB) -302.00 or ETB 8008.00
+  const beforeMatch = normalized.match(
+    new RegExp(`(?:\\(\\s*)?${CURRENCY_PATTERN}(?:\\s*\\))?\\s*[-+]?\\s*([0-9]+(?:\\.[0-9]{1,2})?)`, 'i')
   );
-
-  if (matchBefore?.[1]) {
-    const amount = Number(matchBefore[1]);
-    if (Number.isFinite(amount) && amount > 0) {
-      return Math.abs(amount);
-    }
-  }
-
-  /*
-   * Fallback for OCR that drops the currency or parentheses.
-   * Only use this if the line contains a standalone positive amount.
-   */
-  const fallback = normalized.match(/(?:^|\s)[-+]?(\d+(?:\.\d{1,2})?)(?:\s|$)/);
-
-  if (fallback?.[1]) {
-    const amount = Number(fallback[1]);
-    if (Number.isFinite(amount) && amount > 0) {
-      return Math.abs(amount);
-    }
+  if (beforeMatch?.[1]) {
+    const val = parseFloat(beforeMatch[1]);
+    if (Number.isFinite(val) && val > 0) return val;
   }
 
   return null;
@@ -359,6 +355,26 @@ function extractAmount(text: string): number | null {
     .map(clean)
     .filter(Boolean);
 
+  // 1. Primary path: look directly for the main prominent amount (e.g. "-302.00 (ETB)")
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (isFeeOrVatText(line)) continue;
+
+    // Direct match on line
+    const directAmount = amountFromLine(line);
+    if (directAmount !== null) return directAmount;
+
+    // Split line OCR: Line i is "-8,008.00" and line i+1 is "(ETB)"
+    if (i < lines.length - 1) {
+      const combined = `${line} ${lines[i + 1]}`;
+      if (!isFeeOrVatText(combined)) {
+        const combinedAmount = amountFromLine(combined);
+        if (combinedAmount !== null) return combinedAmount;
+      }
+    }
+  }
+
+  // 2. Secondary path: line with explicit "Paid Amount" / "Settled Amount" labels
   const paidLabels = [
     'Settled Amount',
     'Amount Settled',
@@ -368,75 +384,38 @@ function extractAmount(text: string): number | null {
     'Amount Paid',
     'የተከፈለው መጠን',
     'ጠቅላላ የተከፈለ',
-    'የተከፈለ መጠን',
-    'የተከፈለው ገንዘብ',
   ];
 
-  // Highest-confidence path: a paid/settled label and amount on the same line.
-  for (const line of lines) {
-    if (isFeeOrVatText(line)) continue;
-
-    const hasPaidLabel = paidLabels.some((label) =>
-      new RegExp(escapeRegExp(label), 'i').test(line),
-    );
-    if (hasPaidLabel) {
-      const amount = amountFromLine(line);
-      if (amount !== null && amount > 0) return amount;
-    }
-  }
-
-  // Second path: paid/settled label on one line and amount on the next 1-3 lines.
-  for (let index = 0; index < lines.length; index += 1) {
-    const current = lines[index];
+  for (let i = 0; i < lines.length; i++) {
+    const current = lines[i];
     if (isFeeOrVatText(current)) continue;
 
-    const hasPaidLabel = paidLabels.some((label) =>
-      new RegExp(escapeRegExp(label), 'i').test(current),
-    );
-    if (!hasPaidLabel) continue;
+    const hasLabel = paidLabels.some((lbl) => new RegExp(escapeRegExp(lbl), 'i').test(current));
+    if (hasLabel) {
+      const inlineAmt = amountFromLine(current);
+      if (inlineAmt !== null) return inlineAmt;
 
-    for (const nextLine of lines.slice(index + 1, index + 4)) {
-      if (isFeeOrVatText(nextLine)) break;
-      const amount = amountFromLine(nextLine);
-      if (amount !== null && amount > 0) {
-        return amount;
+      for (const next of lines.slice(i + 1, i + 3)) {
+        if (isFeeOrVatText(next)) break;
+        const nextAmt = amountFromLine(next);
+        if (nextAmt !== null) return nextAmt;
       }
     }
   }
 
-  function containsCurrency(text: string): boolean {
-    return /(?:ETB|ETE|ET8|ETP|ETR|EIB|ELB|FTB|BTB|EТВ|Birr|B1rr|ብር|ብ|ET|BIR)/i.test(
-      String(text ?? '')
-        .replace(/[()]/g, '')
-        .replace(/\s+/g, ' '),
-    );
-  }
-
-  // Third path: a currency amount that is not near a fee/VAT label.
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (isFeeOrVatText(line)) continue;
-    if (index > 0 && isFeeOrVatText(lines[index - 1])) continue;
-    if (!containsCurrency(line)) continue;
-
-    const amount = amountFromLine(line);
-    if (amount !== null && amount > 0) {
-      return amount;
-    }
-  }
-
-  // Fallback: extract using global pattern library from utils/text
-  const utilAmount = extractAmountFromUtil(text);
-  if (utilAmount) {
-    const parsed = Number(utilAmount.replace(/,/g, ''));
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
+  // 3. Fallback: isolated decimal number near "Successful" status
+  for (const line of lines) {
+    if (isFeeOrVatText(line) || /^\d{1,2}[:/]\d{1,2}/.test(line)) continue; // skip time/dates
+    const cleanNum = line.replace(/[\u2010-\u2015\u2212]/g, '-').replace(/,/g, '');
+    const match = cleanNum.match(/^[+-]?\s*(\d+\.\d{2})\b/);
+    if (match?.[1]) {
+      const val = parseFloat(match[1]);
+      if (Number.isFinite(val) && val > 0) return val;
     }
   }
 
   return null;
 }
-
 function extractDate(text: string): string | null {
   const labelled = lineValueAfterLabel(text, [
     'Payment Date',
@@ -641,8 +620,9 @@ export async function verifyTelebirrReceipt(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
+  let response: Response;
   try {
-    const response = await fetch(url, {
+    response = await fetch(url, {
       method: 'GET',
       headers: {
         Accept: 'text/html,application/xhtml+xml',
@@ -651,23 +631,61 @@ export async function verifyTelebirrReceipt(
       },
       signal: controller.signal,
     });
+  } catch (error) {
+    console.error('[Telebirr Network Error]:', error);
+    const message = error instanceof Error ? error.message : String(error);
+    const timedOut = /abort|timeout/i.test(message);
+    return {
+      state: 'issuer_unavailable',
+      title: 'Telebirr check unavailable',
+      detail: timedOut
+        ? 'The official Telebirr endpoint timed out. Try again later.'
+        : 'The phone could not contact the official Telebirr endpoint. This is not proof that the screenshot is fake.',
+      screenshotReceipt,
+      officialReceipt: null,
+      receipt: screenshotReceipt,
+      matchedFields: [],
+      failedFields: [],
+      url,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 
-    if (!response.ok) {
-      return {
-        state: 'issuer_unavailable',
-        title: 'Telebirr issuer unavailable',
-        detail: `The official Telebirr endpoint returned HTTP ${response.status}. This is not proof that the screenshot is fake.`,
-        screenshotReceipt,
-        officialReceipt: null,
-        receipt: screenshotReceipt,
-        matchedFields: [],
-        failedFields: [],
-        url,
-      };
-    }
+  if (!response.ok) {
+    return {
+      state: 'issuer_unavailable',
+      title: 'Telebirr issuer unavailable',
+      detail: `The official Telebirr endpoint returned HTTP ${response.status}. This is not proof that the screenshot is fake.`,
+      screenshotReceipt,
+      officialReceipt: null,
+      receipt: screenshotReceipt,
+      matchedFields: [],
+      failedFields: [],
+      url,
+    };
+  }
 
-    const html = await response.text();
+  let html: string;
+  try {
+    html = await response.text();
+  } catch (error) {
+    console.error('[Telebirr Body Read Error]:', error);
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      state: 'issuer_unavailable',
+      title: 'Telebirr check unavailable',
+      detail: `Failed to read response body: ${message}`,
+      screenshotReceipt,
+      officialReceipt: null,
+      receipt: screenshotReceipt,
+      matchedFields: [],
+      failedFields: [],
+      url,
+    };
+  }
 
+  try {
     /*
      * Detect Cloudflare challenge / block pages (e.g. "Just a moment...").
      * Those responses contain no receipt, so treat the issuer as
@@ -731,14 +749,14 @@ export async function verifyTelebirrReceipt(
 
     const amountToleranceUsed =
       amountMatched &&
-      Math.round(Math.abs(screenshotReceipt.amount - (officialReceipt.amount ?? 0)) * 100) / 100 > 0;
+      Math.round(Math.abs((screenshotReceipt.amount ?? 0) - (officialReceipt.amount ?? 0)) * 100) / 100 > 0;
 
     const statusValid = SUCCESS_STATUS_RE.test(officialReceipt.status ?? '');
     if (statusValid) matchedFields.push('status');
     else failedFields.push('status');
 
-    const screenshotAmountStr = `${screenshotReceipt.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB`;
-    const officialAmountStr = `${officialReceipt.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB`;
+    const screenshotAmountStr = `${(screenshotReceipt.amount ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB`;
+    const officialAmountStr = `${(officialReceipt.amount ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB`;
 
     if (!refMatched || !amountMatched || !statusValid) {
       const resultLabel = 'Screenshot does not match Telebirr';
@@ -760,7 +778,7 @@ export async function verifyTelebirrReceipt(
     return {
       state: 'confirmed',
       title: 'Confirmed by Telebirr',
-      detail: `Screenshot amount: ${screenshotAmountStr}\nOfficial amount: ${officialAmountStr}\nReference: matched\nStatus: ${officialReceipt.status ?? 'completed'}\nResult: Confirmed by Telebirr${amountToleranceUsed ? `\nAmount difference: ${Math.abs(screenshotReceipt.amount - (officialReceipt.amount ?? 0)).toFixed(2)} ETB (within the ${TELEBIRR_AMOUNT_TOLERANCE_ETB.toFixed(2)} ETB fee tolerance)` : ''}`,
+      detail: `Screenshot amount: ${screenshotAmountStr}\nOfficial amount: ${officialAmountStr}\nReference: matched\nStatus: ${officialReceipt.status ?? 'completed'}\nResult: Confirmed by Telebirr${amountToleranceUsed ? `\nAmount difference: ${Math.abs((screenshotReceipt.amount ?? 0) - (officialReceipt.amount ?? 0)).toFixed(2)} ETB (within the ${TELEBIRR_AMOUNT_TOLERANCE_ETB.toFixed(2)} ETB fee tolerance)` : ''}`,
       screenshotReceipt,
       officialReceipt,
       receipt: screenshotReceipt,
@@ -768,15 +786,13 @@ export async function verifyTelebirrReceipt(
       failedFields: [],
       url,
     };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const timedOut = /abort|timeout/i.test(message);
+  } catch (parseError) {
+    console.error('[Telebirr Verify Parsing Error]:', parseError);
+    const message = parseError instanceof Error ? parseError.message : String(parseError);
     return {
-      state: 'issuer_unavailable',
-      title: 'Telebirr check unavailable',
-      detail: timedOut
-        ? 'The official Telebirr endpoint timed out. Try again later.'
-        : 'The phone could not contact the official Telebirr endpoint. This is not proof that the screenshot is fake.',
+      state: 'needs_review',
+      title: 'Receipt parsing error',
+      detail: `Telebirr endpoint responded, but parsing the receipt failed: ${message}`,
       screenshotReceipt,
       officialReceipt: null,
       receipt: screenshotReceipt,
@@ -784,8 +800,6 @@ export async function verifyTelebirrReceipt(
       failedFields: [],
       url,
     };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
