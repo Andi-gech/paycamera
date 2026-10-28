@@ -1,0 +1,47 @@
+{
+  "name": "cheki-mobile",
+  "version": "1.0.0",
+  "main": "expo-router/entry",
+  "dependencies": {
+    "@expo/vector-icons": "^15.0.2",
+    "@react-native-ml-kit/barcode-scanning": "^2.0.0",
+    "@react-native-ml-kit/text-recognition": "^2.0.0",
+    "@types/pako": "^2.0.4",
+    "base-64": "^1.0.0",
+    "cheerio": "^1.2.0",
+    "expo": "~58.0.19",
+    "expo-camera": "~58.0.12",
+    "expo-constants": "~58.0.13",
+    "expo-dev-client": "~58.0.15",
+    "expo-doctor": "^1.21.5",
+    "expo-file-system": "~58.0.0",
+    "expo-font": "~58.0.10",
+    "expo-image-manipulator": "~58.0.0",
+    "expo-image-picker": "~58.0.10",
+    "expo-linking": "~58.0.14",
+    "expo-media-library": "^58.0.12",
+    "expo-router": "~58.0.26",
+    "expo-sqlite": "~58.0.0",
+    "expo-status-bar": "~58.0.4",
+    "install": "^0.13.0",
+    "npx": "^10.2.2",
+    "pako": "^3.0.3",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-native": "0.88.0",
+    "react-native-safe-area-context": "~5.10.1",
+    "react-native-screens": "~4.30.0",
+    "start": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.3.0",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "private": true
+}

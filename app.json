@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "Receipt Verify Ethiopia",
+    "slug": "receipt-verify-ethiopia",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "scheme": "receiptverify",
+    "android": {
+      "package": "et.andualem.receiptverify",
+      "versionCode": 1,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Receipt Verify Ethiopia to take receipt photos and scan QR codes."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Receipt Verify Ethiopia to read receipt screenshots."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Receipt Verify Ethiopia to access your photos.",
+          "savePhotosPermission": "Allow Receipt Verify Ethiopia to save receipt photos."
+        }
+      ],
+      "expo-font"
+    ],
+    "extra": {
+      "router": {
+        "asyncRoutes": {
+          "web": true
+        }
+      },
+      "eas": {
+        "projectId": "473cc043-9a62-40e2-85a2-6f5602afcc0b"
+      }
+    }
+  }
+}
