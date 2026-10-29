@@ -108,7 +108,53 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
     const text = ocrResult.text || '';
     const lower = text.toLowerCase();
 
-    // 1. CBE checks
+    // ── Priority 1: Telebirr Checks ──
+    // Many Telebirr receipts (like "Transfer to Bank") mention other banks (e.g. CBE, Dashen, Awash)
+    // as the destination receiving bank. If Telebirr branding or indicators are present,
+    // this transaction was processed via Telebirr and MUST be identified as Telebirr!
+    const hasTelebirrExplicit =
+      lower.includes('telebirr') ||
+      lower.includes('ቴሌብር') ||
+      lower.includes('ethio telecom') ||
+      lower.includes('ethiotelecom') ||
+      lower.includes('ኢትዮ ቴሌኮም') ||
+      lower.includes('transactioninfo.ethiotelecom.et');
+
+    const telebirrUrlMatch = text.match(/transactioninfo\.ethiotelecom\.et\/receipt\/([A-Za-z0-9]+)/i);
+    const telebirrLabeledRef = text.match(/(?:transaction\s*(?:number|no|id)|txnid|ref(?:erence)?\s*(?:no|number)?|የግብይት\s*ቁጥር)[:\s]+([A-Z0-9]{10})\b/i);
+    const telebirrPrefixRef = text.match(/\b(D[A-Z0-9]{9})\b/i);
+    const telebirrGenericRef = text.match(/\b(?=[A-Z0-9]{10}\b)(?=[A-Z]*\d)(?=\d*[A-Z])[A-Z0-9]{10}\b/i);
+
+    const hasTelebirrTransferToBank =
+      lower.includes('transfer to bank') ||
+      lower.includes('ወደ ባንክ') ||
+      lower.includes('send money to bank');
+
+    if (hasTelebirrExplicit || telebirrUrlMatch || (hasTelebirrTransferToBank && (telebirrPrefixRef || telebirrLabeledRef))) {
+      let ref: string | null = null;
+      if (telebirrUrlMatch) {
+        ref = telebirrUrlMatch[1].toUpperCase();
+      } else if (telebirrLabeledRef) {
+        ref = telebirrLabeledRef[1].toUpperCase();
+      } else if (telebirrPrefixRef) {
+        ref = telebirrPrefixRef[1].toUpperCase();
+      } else if (telebirrGenericRef) {
+        ref = telebirrGenericRef[0].toUpperCase();
+      }
+
+      return {
+        detectedBank: 'telebirr',
+        extractedReference: ref,
+        confidence: 'high',
+        rawTextPreview: text.slice(0, 150),
+      };
+    }
+
+    // ── Priority 2: CBE Checks (Only when NOT a Telebirr receipt) ──
+    const cbeUrlMatch = text.match(/mbreciept\.cbe\.com\.et\/([^\s/?#]+)/i);
+    const cbeTokenMatch = text.match(/\b(v\d{1,2}-[A-Za-z0-9_-]{10,40})\b/);
+    const cbeFtMatch = text.match(/\b(FT[A-Z0-9]{10,12})\b/i);
+
     const hasCbeText =
       lower.includes('commercial bank of ethiopia') ||
       lower.includes('cbe mobile') ||
@@ -117,11 +163,7 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
       lower.includes('combanketh') ||
       lower.includes('የኢትዮጵያ ንግድ ባንክ');
 
-    const cbeUrlMatch = text.match(/mbreciept\.cbe\.com\.et\/([^\s/?#]+)/i);
-    const cbeTokenMatch = text.match(/\b(v\d{1,2}-[A-Za-z0-9_-]{10,40})\b/);
-    const cbeFtMatch = text.match(/\b(FT[A-Z0-9]{10})\b/i);
-
-    if (hasCbeText || cbeUrlMatch || cbeTokenMatch || cbeFtMatch) {
+    if (cbeUrlMatch || cbeTokenMatch || cbeFtMatch || hasCbeText) {
       let ref: string | null = null;
       if (cbeTokenMatch) ref = cbeTokenMatch[1];
       else if (cbeUrlMatch) ref = cbeUrlMatch[1];
@@ -130,40 +172,12 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
       return {
         detectedBank: 'cbe',
         extractedReference: ref,
-        confidence: hasCbeText && ref ? 'high' : 'medium',
+        confidence: (hasCbeText && ref) || cbeUrlMatch || cbeTokenMatch ? 'high' : 'medium',
         rawTextPreview: text.slice(0, 150),
       };
     }
 
-    // 2. Telebirr checks
-    const hasTelebirrText =
-      lower.includes('telebirr') ||
-      lower.includes('ethio telecom') ||
-      lower.includes('ethiotelecom') ||
-      lower.includes('ቴሌብር') ||
-      lower.includes('የክፍያ ዝርዝር') ||
-      lower.includes('transfer money');
-
-    const telebirrUrlMatch = text.match(/transactioninfo\.ethiotelecom\.et\/receipt\/([A-Za-z0-9]+)/i);
-    const telebirrRefMatch = text.match(/\b([A-Z0-9]{10})\b/);
-
-    if (hasTelebirrText || telebirrUrlMatch) {
-      let ref: string | null = null;
-      if (telebirrUrlMatch) {
-        ref = telebirrUrlMatch[1].toUpperCase();
-      } else if (telebirrRefMatch && /\d/.test(telebirrRefMatch[1])) {
-        ref = telebirrRefMatch[1].toUpperCase();
-      }
-
-      return {
-        detectedBank: 'telebirr',
-        extractedReference: ref,
-        confidence: hasTelebirrText && ref ? 'high' : 'medium',
-        rawTextPreview: text.slice(0, 150),
-      };
-    }
-
-    // 3. Dashen Bank checks
+    // ── Priority 3: Dashen Bank ──
     if (lower.includes('dashen') || lower.includes('ዳሽን')) {
       return {
         detectedBank: 'dashen',
@@ -173,7 +187,7 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
       };
     }
 
-    // 4. Awash Bank checks
+    // ── Priority 4: Awash Bank ──
     if (lower.includes('awash') || lower.includes('አዋሽ')) {
       return {
         detectedBank: 'awash',
@@ -183,31 +197,20 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
       };
     }
 
-    // 5. If reference pattern matches standard patterns without explicit bank name
-    if (cbeTokenMatch) {
-      return {
-        detectedBank: 'cbe',
-        extractedReference: cbeTokenMatch[1],
-        confidence: 'medium',
-        rawTextPreview: text.slice(0, 150),
-      };
-    }
-
-    const ftSecondCheck = text.match(/\b(FT[A-Z0-9]{10})\b/i);
-    if (ftSecondCheck) {
-      return {
-        detectedBank: 'cbe',
-        extractedReference: ftSecondCheck[1].toUpperCase(),
-        confidence: 'medium',
-        rawTextPreview: text.slice(0, 150),
-      };
-    }
-
-    const telebirrSecondCheck = text.match(/\b([A-Z0-9]{10})\b/);
-    if (telebirrSecondCheck && /\d/.test(telebirrSecondCheck[1])) {
+    // ── Priority 5: Fallbacks based on Telebirr reference patterns ──
+    if (telebirrPrefixRef) {
       return {
         detectedBank: 'telebirr',
-        extractedReference: telebirrSecondCheck[1].toUpperCase(),
+        extractedReference: telebirrPrefixRef[1].toUpperCase(),
+        confidence: 'medium',
+        rawTextPreview: text.slice(0, 150),
+      };
+    }
+
+    if (telebirrGenericRef) {
+      return {
+        detectedBank: 'telebirr',
+        extractedReference: telebirrGenericRef[0].toUpperCase(),
         confidence: 'low',
         rawTextPreview: text.slice(0, 150),
       };

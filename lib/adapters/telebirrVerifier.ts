@@ -61,14 +61,18 @@ export async function verifyTelebirrReceipt(imageUri: string): Promise<Verificat
 
             // Check for Ethio Telecom URL in OCR
             const ocrUrlMatch = fullText.match(/transactioninfo\.ethiotelecom\.et\/receipt\/([A-Za-z0-9]+)/i);
+            const labeledRefMatch = fullText.match(/(?:transaction\s*(?:number|no|id)|txnid|ref(?:erence)?\s*(?:no|number)?|የግብይት\s*ቁጥር)[:\s]+([A-Z0-9]{10})\b/i);
+            const prefixRefMatch = fullText.match(/\b(D[A-Z0-9]{9})\b/i);
+            const genericRefMatch = fullText.match(/\b(?=[A-Z0-9]{10}\b)(?=[A-Z]*\d)(?=\d*[A-Z])[A-Z0-9]{10}\b/i);
+
             if (ocrUrlMatch) {
                 transactionNumber = ocrUrlMatch[1].toUpperCase();
-            } else {
-                // Match Telebirr transaction reference pattern (e.g., DJQ8BX9KE6 or 10-char alphanumeric)
-                const refMatch = fullText.match(/\b([A-Z0-9]{10})\b/);
-                if (refMatch && /\d/.test(refMatch[1])) {
-                    transactionNumber = refMatch[1].toUpperCase();
-                }
+            } else if (labeledRefMatch) {
+                transactionNumber = labeledRefMatch[1].toUpperCase();
+            } else if (prefixRefMatch) {
+                transactionNumber = prefixRefMatch[1].toUpperCase();
+            } else if (genericRefMatch) {
+                transactionNumber = genericRefMatch[0].toUpperCase();
             }
         }
 
