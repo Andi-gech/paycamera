@@ -11,6 +11,10 @@ npm-debug.*
 web-build/
 scratch/
 
+# native directories
+/android
+/ios
+
 # macOS
 .DS_Store
 

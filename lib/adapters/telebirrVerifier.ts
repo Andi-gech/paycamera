@@ -3,6 +3,7 @@ import BarcodeScanning from '@react-native-ml-kit/barcode-scanning';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { parseOfficialTelebirrHtml } from '../../src/providers/telebirrOfficialScraper';
+import { isValidTelebirrRef, extractTelebirrRefFromText } from './telebirrUtils';
 
 export interface VerificationResult {
     success: boolean;
@@ -37,14 +38,14 @@ export async function verifyTelebirrReceipt(imageUri: string): Promise<Verificat
 
                     // Match Ethio Telecom receipt URL
                     const urlMatch = rawVal.match(/transactioninfo\.ethiotelecom\.et\/receipt\/([A-Za-z0-9]+)/i);
-                    if (urlMatch) {
+                    if (urlMatch && isValidTelebirrRef(urlMatch[1])) {
                         transactionNumber = urlMatch[1].toUpperCase();
                         break;
                     }
 
-                    // Match standard Telebirr 10-character reference
-                    const refMatch = rawVal.match(/\b([A-Z0-9]{10})\b/);
-                    if (refMatch && /\d/.test(refMatch[1])) {
+                    // Match standard Telebirr 10-character reference (strictly mixed letters and digits)
+                    const refMatch = rawVal.match(/\b([A-Z0-9]{10})\b/i);
+                    if (refMatch && isValidTelebirrRef(refMatch[1])) {
                         transactionNumber = refMatch[1].toUpperCase();
                         break;
                     }
@@ -59,20 +60,10 @@ export async function verifyTelebirrReceipt(imageUri: string): Promise<Verificat
             const result = await TextRecognition.recognize(manipulatedImage.uri);
             const fullText = result.text || '';
 
-            // Check for Ethio Telecom URL in OCR
-            const ocrUrlMatch = fullText.match(/transactioninfo\.ethiotelecom\.et\/receipt\/([A-Za-z0-9]+)/i);
-            const labeledRefMatch = fullText.match(/(?:transaction\s*(?:number|no|id)|txnid|ref(?:erence)?\s*(?:no|number)?|የግብይት\s*ቁጥር)[:\s]+([A-Z0-9]{10})\b/i);
-            const prefixRefMatch = fullText.match(/\b(D[A-Z0-9]{9})\b/i);
-            const genericRefMatch = fullText.match(/\b(?=[A-Z0-9]{10}\b)(?=[A-Z]*\d)(?=\d*[A-Z])[A-Z0-9]{10}\b/i);
-
-            if (ocrUrlMatch) {
-                transactionNumber = ocrUrlMatch[1].toUpperCase();
-            } else if (labeledRefMatch) {
-                transactionNumber = labeledRefMatch[1].toUpperCase();
-            } else if (prefixRefMatch) {
-                transactionNumber = prefixRefMatch[1].toUpperCase();
-            } else if (genericRefMatch) {
-                transactionNumber = genericRefMatch[0].toUpperCase();
+            // Extract valid Telebirr reference (never full number or full alphabet)
+            const extracted = extractTelebirrRefFromText(fullText);
+            if (extracted) {
+                transactionNumber = extracted;
             }
         }
 

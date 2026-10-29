@@ -32,7 +32,13 @@ const PROGUARD_RULES = `
 
 function withMLKitManifest(config) {
   return withAndroidManifest(config, (modConfig) => {
-    const mainApplication = modConfig.modResults.manifest.application[0];
+    const manifest = modConfig.modResults.manifest;
+    if (!manifest.$) {
+      manifest.$ = {};
+    }
+    manifest.$['xmlns:tools'] = 'http://schemas.android.com/tools';
+
+    const mainApplication = manifest.application[0];
 
     // Enable cleartext traffic for Ethiopian telecom/banking endpoints
     mainApplication.$['android:usesCleartextTraffic'] = 'true';
@@ -41,7 +47,8 @@ function withMLKitManifest(config) {
       mainApplication['meta-data'] = [];
     }
 
-    // 1. Google ML Kit vision dependencies (ocr, barcode, text)
+    // 1. Google ML Kit vision dependencies (ocr, barcode, text, barcode_ui)
+    // Note: tools:replace="android:value" prevents merge conflicts with expo-camera
     const existingMlKit = mainApplication['meta-data'].find(
       (m) => m.$['android:name'] === 'com.google.mlkit.vision.DEPENDENCIES'
     );
@@ -49,11 +56,13 @@ function withMLKitManifest(config) {
       mainApplication['meta-data'].push({
         $: {
           'android:name': 'com.google.mlkit.vision.DEPENDENCIES',
-          'android:value': 'ocr,barcode,text',
+          'android:value': 'barcode_ui,barcode,ocr,text',
+          'tools:replace': 'android:value',
         },
       });
     } else {
-      existingMlKit.$['android:value'] = 'ocr,barcode,text';
+      existingMlKit.$['android:value'] = 'barcode_ui,barcode,ocr,text';
+      existingMlKit.$['tools:replace'] = 'android:value';
     }
 
     // 2. Fallback Firebase ML vision dependencies
@@ -65,8 +74,12 @@ function withMLKitManifest(config) {
         $: {
           'android:name': 'com.google.firebase.ml.vision.DEPENDENCIES',
           'android:value': 'ocr,barcode',
+          'tools:replace': 'android:value',
         },
       });
+    } else {
+      existingFirebase.$['android:value'] = 'ocr,barcode';
+      existingFirebase.$['tools:replace'] = 'android:value';
     }
 
     return modConfig;

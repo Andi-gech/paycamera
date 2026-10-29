@@ -3,6 +3,7 @@ import BarcodeScanning from '@react-native-ml-kit/barcode-scanning';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
 import * as ImageManipulator from 'expo-image-manipulator';
 import type { BankId } from '../types';
+import { isValidTelebirrRef, extractTelebirrRefFromText } from './telebirrUtils';
 
 export interface IdentificationResult {
   detectedBank: BankId | null;
@@ -79,16 +80,17 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
         // Check for Telebirr URL
         if (val.includes('transactioninfo.ethiotelecom.et/receipt/')) {
           const match = val.match(/receipt\/([A-Za-z0-9]+)/i);
+          const candidate = match ? match[1].toUpperCase() : val.toUpperCase();
           return {
             detectedBank: 'telebirr',
-            extractedReference: match ? match[1].toUpperCase() : val,
+            extractedReference: isValidTelebirrRef(candidate) ? candidate : null,
             confidence: 'high',
             rawBarcode: val,
           };
         }
 
-        // Telebirr 10-char alphanumeric reference in QR
-        if (/^[A-Z0-9]{10}$/i.test(val) && /\d/.test(val) && !val.startsWith('FT')) {
+        // Telebirr 10-char alphanumeric reference in QR (strictly mixed letters and numbers; never full numbers or full alphabet)
+        if (isValidTelebirrRef(val)) {
           return {
             detectedBank: 'telebirr',
             extractedReference: val.toUpperCase(),
@@ -120,31 +122,17 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
       lower.includes('ኢትዮ ቴሌኮም') ||
       lower.includes('transactioninfo.ethiotelecom.et');
 
-    const telebirrUrlMatch = text.match(/transactioninfo\.ethiotelecom\.et\/receipt\/([A-Za-z0-9]+)/i);
-    const telebirrLabeledRef = text.match(/(?:transaction\s*(?:number|no|id)|txnid|ref(?:erence)?\s*(?:no|number)?|የግብይት\s*ቁጥር)[:\s]+([A-Z0-9]{10})\b/i);
-    const telebirrPrefixRef = text.match(/\b(D[A-Z0-9]{9})\b/i);
-    const telebirrGenericRef = text.match(/\b(?=[A-Z0-9]{10}\b)(?=[A-Z]*\d)(?=\d*[A-Z])[A-Z0-9]{10}\b/i);
-
     const hasTelebirrTransferToBank =
       lower.includes('transfer to bank') ||
       lower.includes('ወደ ባንክ') ||
       lower.includes('send money to bank');
 
-    if (hasTelebirrExplicit || telebirrUrlMatch || (hasTelebirrTransferToBank && (telebirrPrefixRef || telebirrLabeledRef))) {
-      let ref: string | null = null;
-      if (telebirrUrlMatch) {
-        ref = telebirrUrlMatch[1].toUpperCase();
-      } else if (telebirrLabeledRef) {
-        ref = telebirrLabeledRef[1].toUpperCase();
-      } else if (telebirrPrefixRef) {
-        ref = telebirrPrefixRef[1].toUpperCase();
-      } else if (telebirrGenericRef) {
-        ref = telebirrGenericRef[0].toUpperCase();
-      }
+    const extractedTelebirrRef = extractTelebirrRefFromText(text);
 
+    if (hasTelebirrExplicit || (hasTelebirrTransferToBank && extractedTelebirrRef)) {
       return {
         detectedBank: 'telebirr',
-        extractedReference: ref,
+        extractedReference: extractedTelebirrRef,
         confidence: 'high',
         rawTextPreview: text.slice(0, 150),
       };
@@ -197,21 +185,12 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
       };
     }
 
-    // ── Priority 5: Fallbacks based on Telebirr reference patterns ──
-    if (telebirrPrefixRef) {
+    // ── Priority 5: Fallbacks based on Telebirr reference pattern (never full numbers or full alphabet) ──
+    if (extractedTelebirrRef) {
       return {
         detectedBank: 'telebirr',
-        extractedReference: telebirrPrefixRef[1].toUpperCase(),
+        extractedReference: extractedTelebirrRef,
         confidence: 'medium',
-        rawTextPreview: text.slice(0, 150),
-      };
-    }
-
-    if (telebirrGenericRef) {
-      return {
-        detectedBank: 'telebirr',
-        extractedReference: telebirrGenericRef[0].toUpperCase(),
-        confidence: 'low',
         rawTextPreview: text.slice(0, 150),
       };
     }

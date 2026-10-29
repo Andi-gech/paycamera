@@ -1,4 +1,5 @@
 import { load } from 'cheerio/slim';
+import { isValidTelebirrRef } from '../../lib/adapters/telebirrUtils';
 
 export type OfficialTelebirrReceipt = {
   reference: string | null;
@@ -282,8 +283,8 @@ export function parseOfficialTelebirrHtml(rawHtml: string): OfficialTelebirrRece
   ]);
 
   if (reference) {
-    const refMatch = reference.match(/[A-Z0-9]{10}/i);
-    if (refMatch && /\d/.test(refMatch[0]) && !FORBIDDEN_REFERENCES.has(refMatch[0].toUpperCase())) {
+    const refMatch = reference.match(/[A-Z0-9]{9,12}/i);
+    if (refMatch && isValidTelebirrRef(refMatch[0])) {
       reference = refMatch[0].toUpperCase();
     } else {
       reference = null;
@@ -292,13 +293,14 @@ export function parseOfficialTelebirrHtml(rawHtml: string): OfficialTelebirrRece
 
   if (!reference) {
     // If not found in table pairs, search clean body text for 10-char reference (avoids script/style tags)
+    // Never count full number or full alphabet as Telebirr reference
     const $ = load(rawHtml);
     $('script, style, noscript').remove();
     const cleanBody = cleanText($('body').text());
     const matches = cleanBody.match(/\b([A-Z0-9]{10})\b/gi) ?? [];
     for (const m of matches) {
       const cand = m.toUpperCase();
-      if (/\d/.test(cand) && !FORBIDDEN_REFERENCES.has(cand)) {
+      if (isValidTelebirrRef(cand)) {
         reference = cand;
         break;
       }
