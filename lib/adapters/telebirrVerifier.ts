@@ -17,6 +17,25 @@ export interface VerificationResult {
     error?: string;
 }
 
+function extractOcrReceiptDetails(text: string) {
+    if (!text) return {};
+
+    const amountMatch = text.match(/(?:amount|ብር|የተከፈለው\s*መጠን)[:\s]*([\d,]+(?:\.\d+)?)\s*(?:birr|etb|ብር)?/i) ||
+                        text.match(/([\d,]+(?:\.\d+)?)\s*(?:birr|etb|ብር)/i);
+
+    const payerMatch = text.match(/(?:payer\s*name|payer|from|ከፋይ|የከፋይ\s*ስም)[:\s]+([^\n\r]+)/i);
+    const receiverMatch = text.match(/(?:receiver\s*name|receiver|to|ተቀባይ|የተቀባይ\s*ስም|credited\s*party)[:\s]+([^\n\r]+)/i);
+    const timeMatch = text.match(/(\d{2}[-/]\d{2}[-/]\d{4}\s+\d{2}:\d{2}(?::\d{2})?)/) ||
+                      text.match(/(\d{4}[-/]\d{2}[-/]\d{2}\s+\d{2}:\d{2}(?::\d{2})?)/);
+
+    return {
+        amount: amountMatch ? `${amountMatch[1]} Birr` : undefined,
+        senderName: payerMatch ? payerMatch[1].trim() : undefined,
+        receiverName: receiverMatch ? receiverMatch[1].trim() : undefined,
+        transactionTime: timeMatch ? timeMatch[1].trim() : undefined,
+    };
+}
+
 export async function verifyTelebirrReceipt(imageUri: string): Promise<VerificationResult> {
     try {
         // 1. Optimize image quality for low-res or blurry photos
@@ -28,6 +47,7 @@ export async function verifyTelebirrReceipt(imageUri: string): Promise<Verificat
 
         // 2. Scan barcode / QR code FIRST if present in the screenshot
         let transactionNumber: string | undefined;
+        let fullText = '';
 
         try {
             const barcodes = await BarcodeScanning.scan(manipulatedImage.uri);
@@ -55,16 +75,19 @@ export async function verifyTelebirrReceipt(imageUri: string): Promise<Verificat
             console.log('[Telebirr] Barcode scanning skipped or not found:', barcodeErr);
         }
 
-        // 3. Fallback to Google ML Kit OCR text recognition
-        if (!transactionNumber) {
+        // 3. Fallback to Google ML Kit OCR text recognition (also provides fallback receipt details)
+        try {
             const result = await TextRecognition.recognize(manipulatedImage.uri);
-            const fullText = result.text || '';
+            fullText = result.text || '';
 
-            // Extract valid Telebirr reference (never full number or full alphabet)
-            const extracted = extractTelebirrRefFromText(fullText);
-            if (extracted) {
-                transactionNumber = extracted;
+            if (!transactionNumber) {
+                const extracted = extractTelebirrRefFromText(fullText);
+                if (extracted) {
+                    transactionNumber = extracted;
+                }
             }
+        } catch (ocrErr) {
+            console.log('[Telebirr] OCR recognition error:', ocrErr);
         }
 
         if (!transactionNumber) {
@@ -75,36 +98,51 @@ export async function verifyTelebirrReceipt(imageUri: string): Promise<Verificat
         const receiptUrl = `https://transactioninfo.ethiotelecom.et/receipt/${transactionNumber}`;
         let htmlText = '';
 
+        const isDnsFailure = (e: any) => {
+            const s = String(e?.message || e);
+            return s.includes('UnknownHostException') || s.includes('Unable to resolve host') || s.includes('No address associated');
+        };
+
         try {
             console.log(`[Telebirr] Fetching official receipt: ${receiptUrl}`);
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            const fetchHeaders = {
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            };
 
             let response: Response | null = null;
             try {
-                response = await fetch(receiptUrl, {
-                    signal: controller.signal,
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    },
-                });
-            } catch (httpsErr: any) {
-                // If HTTPS failed due to SSL or DNS, try HTTP fallback
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 8000);
                 try {
-                    const httpUrl = `http://transactioninfo.ethiotelecom.et/receipt/${transactionNumber}`;
-                    response = await fetch(httpUrl, {
+                    response = await fetch(receiptUrl, {
                         signal: controller.signal,
-                        headers: {
-                            'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
-                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        },
+                        headers: fetchHeaders,
                     });
-                } catch {
+                } finally {
+                    clearTimeout(timeoutId);
+                }
+            } catch (httpsErr: any) {
+                // If it's NOT a DNS error (e.g. SSL certificate mismatch), try HTTP fallback
+                if (!isDnsFailure(httpsErr)) {
+                    try {
+                        const httpController = new AbortController();
+                        const httpTimeoutId = setTimeout(() => httpController.abort(), 8000);
+                        const httpUrl = `http://transactioninfo.ethiotelecom.et/receipt/${transactionNumber}`;
+                        try {
+                            response = await fetch(httpUrl, {
+                                signal: httpController.signal,
+                                headers: fetchHeaders,
+                            });
+                        } finally {
+                            clearTimeout(httpTimeoutId);
+                        }
+                    } catch {
+                        throw httpsErr;
+                    }
+                } else {
                     throw httpsErr;
                 }
-            } finally {
-                clearTimeout(timeoutId);
             }
 
             if (!response || !response.ok) {
@@ -115,15 +153,27 @@ export async function verifyTelebirrReceipt(imageUri: string): Promise<Verificat
         } catch (fetchErr: any) {
             console.warn('[Telebirr] Network fetch warning:', fetchErr?.message || fetchErr);
             const errString = String(fetchErr?.message || fetchErr);
-            const isDnsError = errString.includes('UnknownHostException') || errString.includes('Unable to resolve host');
+            const isDns = isDnsFailure(fetchErr);
+            const isTimeout = errString.includes('canceled') || errString.includes('aborted') || errString.includes('timeout');
+
+            const ocrDetails = extractOcrReceiptDetails(fullText);
+
+            let friendlyMessage = `Could not reach Telebirr verification server (${errString}).`;
+            if (isDns) {
+                friendlyMessage = 'Cannot connect to Ethio Telecom (transactioninfo.ethiotelecom.et). DNS resolution failed — verify your internet connection (works best on Ethio Telecom network without VPN/custom DNS).';
+            } else if (isTimeout) {
+                friendlyMessage = 'Telebirr verification request timed out. Ethio Telecom receipt server is slow or unreachable from this network.';
+            }
 
             return {
                 success: false,
                 receiptUrl,
                 transactionNumber,
-                error: isDnsError
-                    ? 'Cannot connect to Ethio Telecom (transactioninfo.ethiotelecom.et). Please verify your device has an active internet connection (Ethio Telecom network or Wi-Fi).'
-                    : `Could not reach Telebirr verification server (${errString}).`,
+                amount: ocrDetails.amount,
+                senderName: ocrDetails.senderName,
+                receiverName: ocrDetails.receiverName,
+                transactionTime: ocrDetails.transactionTime,
+                error: friendlyMessage,
             };
         }
 
