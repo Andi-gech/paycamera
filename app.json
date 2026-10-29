@@ -1,20 +1,26 @@
 {
   "expo": {
-    "name": "Receipt Verify Ethiopia",
+    "name": "ልክ pay",
     "slug": "receipt-verify-ethiopia",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "icon": "./assets/icon.png",
     "scheme": "receiptverify",
     "android": {
       "package": "et.andualem.receiptverify",
       "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#000000"
+      },
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.CAMERA",
         "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_EXTERNAL_STORAGE"
       ]
     },
     "plugins": [
@@ -22,20 +28,20 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Receipt Verify Ethiopia to take receipt photos and scan QR codes."
+          "cameraPermission": "Allow ልክ pay to take receipt photos and scan QR codes."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Receipt Verify Ethiopia to read receipt screenshots."
+          "photosPermission": "Allow ልክ pay to read receipt screenshots."
         }
       ],
       [
         "expo-media-library",
         {
-          "photosPermission": "Allow Receipt Verify Ethiopia to access your photos.",
-          "savePhotosPermission": "Allow Receipt Verify Ethiopia to save receipt photos."
+          "photosPermission": "Allow ልክ pay to access your photos.",
+          "savePhotosPermission": "Allow ልክ pay to save receipt photos."
         }
       ],
       "expo-font"

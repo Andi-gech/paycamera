@@ -120,25 +120,28 @@ type LabelValuePair = {
  * Extract label-value pairs from raw HTML using Cheerio, preserving table relationships.
  */
 function extractPairsFromHtml(html: string): LabelValuePair[] {
-  console.log(html)
   const $ = load(html);
+
+  // Remove script and style elements completely to avoid hashing artifacts or script content
+  $('script, style, noscript').remove();
 
   const pairs: LabelValuePair[] = [];
 
   /**
    * Snapshot each row's cell texts once, whitespace-cleaned.
-   * Empty cells (e.g. <td>&nbsp;</td> used purely for layout) are dropped
-   * so a leading spacer cell cannot break the label/value pairing.
+   * Filter out outer layout rows that contain nested tables so they don't corrupt pairings.
    */
   const rows: string[][] = $('tr')
+    .filter((_, row) => $(row).find('table').length === 0)
     .toArray()
     .map((row) =>
       $(row)
-        .find('> td, > th')
+        .children('td, th')
         .toArray()
         .map((cell) => cleanText($(cell).text()))
         .filter((text) => text.length > 0),
-    );
+    )
+    .filter((cells) => cells.length > 0);
 
   const hasDigit = (texts: string[]) => texts.some((t) => /\d/.test(t));
 
@@ -288,8 +291,11 @@ export function parseOfficialTelebirrHtml(rawHtml: string): OfficialTelebirrRece
   }
 
   if (!reference) {
-    // If not found in table pairs, search raw HTML for 10-char reference (e.g. from receipt URL or header)
-    const matches = rawHtml.match(/\b([A-Z0-9]{10})\b/gi) ?? [];
+    // If not found in table pairs, search clean body text for 10-char reference (avoids script/style tags)
+    const $ = load(rawHtml);
+    $('script, style, noscript').remove();
+    const cleanBody = cleanText($('body').text());
+    const matches = cleanBody.match(/\b([A-Z0-9]{10})\b/gi) ?? [];
     for (const m of matches) {
       const cand = m.toUpperCase();
       if (/\d/.test(cand) && !FORBIDDEN_REFERENCES.has(cand)) {
@@ -305,13 +311,15 @@ export function parseOfficialTelebirrHtml(rawHtml: string): OfficialTelebirrRece
     'payment status',
     'status',
     'የክፍያው ሁኔታ',
+    'የክፍያ ሁኔታ',
+    'የግብይት ሁኔታ',
+    'ሁኔታ',
   ]);
 
-  // Parse date
+  // Parse date: do NOT include bare 'date' which matches 'VAT Reg. Date'
   const paymentDate = findValue([
     'payment date',
     'transaction date',
-    'date',
     'የክፍያ ቀን',
   ]);
 
