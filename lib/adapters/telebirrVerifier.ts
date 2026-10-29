@@ -79,37 +79,57 @@ export async function verifyTelebirrReceipt(imageUri: string): Promise<Verificat
         // 4. Fetch official Ethio telecom HTML receipt page
         const receiptUrl = `https://transactioninfo.ethiotelecom.et/receipt/${transactionNumber}`;
         let htmlText = '';
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 12000);
 
         try {
             console.log(`[Telebirr] Fetching official receipt: ${receiptUrl}`);
-            const response = await fetch(receiptUrl, {
-                signal: controller.signal,
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                },
-            });
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-            if (!response.ok) {
-                return { success: false, receiptUrl, transactionNumber, error: `Failed to fetch Telebirr receipt (Status: ${response.status})` };
+            let response: Response | null = null;
+            try {
+                response = await fetch(receiptUrl, {
+                    signal: controller.signal,
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    },
+                });
+            } catch (httpsErr: any) {
+                // If HTTPS failed due to SSL or DNS, try HTTP fallback
+                try {
+                    const httpUrl = `http://transactioninfo.ethiotelecom.et/receipt/${transactionNumber}`;
+                    response = await fetch(httpUrl, {
+                        signal: controller.signal,
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        },
+                    });
+                } catch {
+                    throw httpsErr;
+                }
+            } finally {
+                clearTimeout(timeoutId);
+            }
+
+            if (!response || !response.ok) {
+                return { success: false, receiptUrl, transactionNumber, error: `Failed to fetch Telebirr receipt (Status: ${response?.status || 'Unknown'})` };
             }
 
             htmlText = await response.text();
         } catch (fetchErr: any) {
-            console.error('[Telebirr] Network fetch error:', fetchErr);
-            const isTimeout = fetchErr?.name === 'AbortError';
+            console.warn('[Telebirr] Network fetch warning:', fetchErr?.message || fetchErr);
+            const errString = String(fetchErr?.message || fetchErr);
+            const isDnsError = errString.includes('UnknownHostException') || errString.includes('Unable to resolve host');
+
             return {
                 success: false,
                 receiptUrl,
                 transactionNumber,
-                error: isTimeout
-                    ? 'Connection timed out while contacting Telebirr server. Please check your network and try again.'
-                    : `Could not connect to Telebirr server (transactioninfo.ethiotelecom.et). Ethio Telecom's receipt server is geo-blocked outside Ethiopia and requires an Ethiopian IP/network.`,
+                error: isDnsError
+                    ? 'Cannot connect to Ethio Telecom (transactioninfo.ethiotelecom.et). Please verify your device has an active internet connection (Ethio Telecom network or Wi-Fi).'
+                    : `Could not reach Telebirr verification server (${errString}).`,
             };
-        } finally {
-            clearTimeout(timeoutId);
         }
 
         // 5. High-fidelity parsing with official scraper + regex fallback
