@@ -45,7 +45,8 @@
           "savePhotosPermission": "Allow ልክ pay to save receipt photos."
         }
       ],
-      "expo-font"
+      "expo-font",
+      "./plugins/withMLKit"
     ],
     "extra": {
       "router": {
