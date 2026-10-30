@@ -11,14 +11,23 @@ export default function EntryScreen() {
 
   useEffect(() => {
     (async () => {
-      const done = await getOnboardingComplete();
-      // Replace so user can't go "back" to the splash
-      if (done) {
+      console.log('[PAGE: EntryScreen (app/index.tsx)] Step 1: Checking onboarding status in storage...');
+      try {
+        const done = await getOnboardingComplete();
+        console.log('[PAGE: EntryScreen (app/index.tsx)] Step 2: Onboarding complete =', done);
+        if (done) {
+          console.log('[PAGE: EntryScreen (app/index.tsx)] Step 3: Navigating to /(tabs)');
+          router.replace('/(tabs)');
+        } else {
+          console.log('[PAGE: EntryScreen (app/index.tsx)] Step 3: Navigating to /onboarding');
+          router.replace('/onboarding');
+        }
+      } catch (err) {
+        console.error('[PAGE: EntryScreen (app/index.tsx)] Failed checking onboarding:', err);
         router.replace('/(tabs)');
-      } else {
-        router.replace('/onboarding');
+      } finally {
+        setChecking(false);
       }
-      setChecking(false);
     })();
   }, [router]);
 

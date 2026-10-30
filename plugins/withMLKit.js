@@ -1,9 +1,18 @@
 // plugins/withMLKit.js — Expo Config Plugin for Google ML Kit OCR, Barcodes & Network Config
-const { withAndroidManifest, withDangerousMod } = require('@expo/config-plugins');
+const { withAndroidManifest, withDangerousMod, withGradleProperties } = require('@expo/config-plugins');
 const fs = require('fs');
 const path = require('path');
 
 const PROGUARD_RULES = `
+# ─── React Native Bridge & NativeModules ──────────────────────────────
+-keepclassmembers class * {
+    @com.facebook.react.bridge.ReactMethod *;
+    @com.facebook.react.bridge.ReactMethod(isBlockingSynchronousMethod=true) *;
+}
+-keep class * extends com.facebook.react.bridge.NativeModule { *; }
+-keep class * extends com.facebook.react.bridge.JavaScriptModule { *; }
+-keep class * extends com.facebook.react.bridge.ReactContextBaseJavaModule { *; }
+
 # ─── Google ML Kit Text Recognition & Barcode Scanning Rules ─────────
 -keep class com.google.mlkit.** { *; }
 -dontwarn com.google.mlkit.**
@@ -42,6 +51,9 @@ function withMLKitManifest(config) {
 
     // Enable cleartext traffic for Ethiopian telecom/banking endpoints
     mainApplication.$['android:usesCleartextTraffic'] = 'true';
+
+    // Enable large heap so camera photos and OCR image decoding don't trigger OutOfMemoryError
+    mainApplication.$['android:largeHeap'] = 'true';
 
     if (!mainApplication['meta-data']) {
       mainApplication['meta-data'] = [];
@@ -86,6 +98,21 @@ function withMLKitManifest(config) {
   });
 }
 
+function withMLKitGradleProperties(config) {
+  return withGradleProperties(config, (modConfig) => {
+    // Disable R8 minification in release builds to prevent stripping ML Kit native reflection & bridges
+    modConfig.modResults = modConfig.modResults.filter(
+      (item) => item.key !== 'android.enableMinifyInReleaseBuilds'
+    );
+    modConfig.modResults.push({
+      type: 'property',
+      key: 'android.enableMinifyInReleaseBuilds',
+      value: 'false',
+    });
+    return modConfig;
+  });
+}
+
 function withMLKitProGuard(config) {
   return withDangerousMod(config, [
     'android',
@@ -121,6 +148,6 @@ function withMLKitProGuard(config) {
 }
 
 module.exports = function withMLKit(config) {
-  return withMLKitProGuard(withMLKitManifest(config));
+  return withMLKitGradleProperties(withMLKitProGuard(withMLKitManifest(config)));
 };
 

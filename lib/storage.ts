@@ -27,9 +27,15 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
         receiptUrl TEXT,
         errorMessage TEXT,
         isLegacy INTEGER NOT NULL DEFAULT 0,
-        createdAt TEXT NOT NULL
+        createdAt TEXT NOT NULL,
+        imageUri TEXT
       );
     `);
+    try {
+      await dbInstance.execAsync('ALTER TABLE history ADD COLUMN imageUri TEXT;');
+    } catch {
+      // Column already exists in schema
+    }
   }
   return dbInstance;
 }
@@ -120,8 +126,8 @@ export async function saveVerification(
     `INSERT INTO history
        (id, bank, bankName, reference, amount, currency, status,
         senderName, receiverName, receiverAccount, transactionTime,
-        receiptUrl, errorMessage, isLegacy, createdAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        receiptUrl, errorMessage, isLegacy, createdAt, imageUri)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       full.id,
       full.bank,
@@ -138,6 +144,7 @@ export async function saveVerification(
       full.errorMessage ?? null,
       full.isLegacy ? 1 : 0,
       full.createdAt,
+      full.imageUri ?? null,
     ]
   );
 
@@ -184,6 +191,7 @@ export async function getHistory(
     errorMessage: string | null;
     isLegacy: number;
     createdAt: string;
+    imageUri: string | null;
   }>(sql, params);
 
   return rows.map((r) => ({
@@ -191,6 +199,7 @@ export async function getHistory(
     bank: r.bank as BankId,
     status: r.status as VerificationStatus,
     isLegacy: r.isLegacy === 1,
+    imageUri: r.imageUri ?? null,
   }));
 }
 
@@ -214,6 +223,7 @@ export async function getVerificationById(
     errorMessage: string | null;
     isLegacy: number;
     createdAt: string;
+    imageUri: string | null;
   }>('SELECT * FROM history WHERE id = ?', [id]);
 
   if (!row) return null;
@@ -222,6 +232,7 @@ export async function getVerificationById(
     bank: row.bank as BankId,
     status: row.status as VerificationStatus,
     isLegacy: row.isLegacy === 1,
+    imageUri: row.imageUri ?? null,
   };
 }
 

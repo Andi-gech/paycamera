@@ -8,6 +8,8 @@ import {
   ScrollView,
   ActivityIndicator,
   Share,
+  Image,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -24,21 +26,52 @@ export default function ReceiptDetailsScreen() {
   const { recordId } = useLocalSearchParams<{ recordId?: string }>();
   const [record, setRecord] = useState<VerificationRecord | null>(null);
   const [loading, setLoading] = useState(true);
+  const [fullscreenModal, setFullscreenModal] = useState(false);
 
   useEffect(() => {
+    console.log('[PAGE: ReceiptDetails (app/receipt-details.tsx)] Mounted with recordId:', recordId);
     if (recordId) {
+      console.log('[PAGE: ReceiptDetails] Fetching verification record for id:', recordId);
       getVerificationById(recordId).then((rec) => {
+        console.log('[PAGE: ReceiptDetails] Loaded record:', JSON.stringify(rec));
         setRecord(rec);
+        setLoading(false);
+      }).catch((err) => {
+        console.error('[PAGE: ReceiptDetails] Error loading record:', err);
         setLoading(false);
       });
     } else {
+      console.warn('[PAGE: ReceiptDetails] No recordId provided, using demo data');
       setLoading(false);
     }
   }, [recordId]);
 
+  const data: VerificationRecord = record || {
+    id: '',
+    bank: 'telebirr',
+    bankName: '',
+    reference: '',
+    amount: '',
+    currency: 'ETB',
+    status: 'pending',
+    senderName: '',
+    receiverName: '',
+    receiverAccount: '',
+    transactionTime: '',
+    receiptUrl: null,
+    errorMessage: null,
+    isLegacy: false,
+    createdAt: new Date().toISOString(),
+  };
+
+  const isVerified = data.status === 'verified';
+  const isFailed = data.status === 'failed';
+
   const handleShare = async () => {
     try {
-      const msg = `✅ ${record?.bankName || 'Telebirr'} Receipt Verified\nReference: ${record?.reference || 'DJR1DSXKZH'}\nAmount: ${record?.amount || '-101.00 ETB'}\nReceiver: ${record?.receiverName || 'Zemensa Behaylu'}\nTime: ${record?.transactionTime || '2026/10/27 21:37:57'}`;
+      const statusIcon = isVerified ? '✅' : isFailed ? '❌' : '⏳';
+      const statusTitle = isVerified ? 'Verified' : isFailed ? 'Failed' : 'Pending';
+      const msg = `${statusIcon} ${data.bankName || 'Receipt'} (${statusTitle})\nReference: ${data.reference || '-'}\nAmount: ${data.amount || '-'}\nReceiver: ${data.receiverName || '-'}\nTime: ${data.transactionTime || '-'}`;
       await Share.share({ message: msg });
     } catch (err) {
       console.error(err);
@@ -53,29 +86,18 @@ export default function ReceiptDetailsScreen() {
     );
   }
 
-  const data: VerificationRecord = record || {
-    id: 'demo',
-    bank: 'telebirr',
-    bankName: 'Telebirr',
-    reference: 'DJR1DSXKZH',
-    amount: '-101.00 ETB',
-    currency: 'ETB',
-    status: 'verified',
-    senderName: '(not available)',
-    receiverName: 'Zemensa Behaylu',
-    receiverAccount: 'HO',
-    transactionTime: '2026/10/27 21:37:57',
-    receiptUrl: null,
-    errorMessage: null,
-    isLegacy: false,
-    createdAt: new Date().toISOString(),
-  };
-
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
       {/* Top Navbar */}
       <View style={styles.navBar}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} activeOpacity={0.7}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => {
+            console.log('[PAGE: ReceiptDetails] Back button pressed');
+            router.back();
+          }}
+          activeOpacity={0.7}
+        >
           <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={[styles.navTitle, { color: colors.textPrimary }]}>{t.navDetailsTitle}</Text>
@@ -89,12 +111,24 @@ export default function ReceiptDetailsScreen() {
           <View style={styles.cardHeaderRow}>
             <View style={styles.bankIdentity}>
               <BankLogo bankId={data.bank} size={36} />
-              <Text style={[styles.bankTitle, { color: colors.textPrimary }]}>{data.bankName || 'Telebirr'}</Text>
+              <Text style={[styles.bankTitle, { color: colors.textPrimary }]}>{data.bankName || '-'}</Text>
             </View>
-            <View style={[styles.pillVerified, { backgroundColor: colors.successSurface }]}>
-              <Ionicons name="checkmark-circle" size={11} color="#10B981" />
-              <Text style={styles.pillVerifiedText}>{t.statusVerified}</Text>
-            </View>
+            {isVerified ? (
+              <View style={[styles.pillVerified, { backgroundColor: colors.successSurface }]}>
+                <Ionicons name="checkmark-circle" size={11} color="#10B981" />
+                <Text style={styles.pillVerifiedText}>{t.statusVerified}</Text>
+              </View>
+            ) : isFailed ? (
+              <View style={[styles.pillVerified, { backgroundColor: colors.errorSurface }]}>
+                <Ionicons name="close-circle" size={11} color="#EF4444" />
+                <Text style={[styles.pillVerifiedText, { color: '#EF4444' }]}>{t.statusUnable}</Text>
+              </View>
+            ) : (
+              <View style={[styles.pillVerified, { backgroundColor: colors.surfaceSubtle }]}>
+                <Ionicons name="time-outline" size={11} color={colors.textSecondary} />
+                <Text style={[styles.pillVerifiedText, { color: colors.textSecondary }]}>{t.statusPending}</Text>
+              </View>
+            )}
           </View>
 
           {/* Amount Row */}
@@ -102,7 +136,7 @@ export default function ReceiptDetailsScreen() {
             <Text style={[styles.amountLarge, { color: colors.textPrimary }]}>
               {data.amount
                 ? (data.amount.startsWith('-') ? data.amount : `-${data.amount}`)
-                : '-101.00 ETB'}
+                : '-'}
             </Text>
             <Text style={[styles.transferTypeLabel, { color: colors.textSecondary }]}>{t.labelTransferMoney}</Text>
           </View>
@@ -111,18 +145,29 @@ export default function ReceiptDetailsScreen() {
           <View style={styles.quickDetails}>
             <View style={styles.quickRow}>
               <Text style={[styles.quickLabel, { color: colors.textSecondary }]}>{t.labelReference}</Text>
-              <Text style={[styles.quickValueBold, { color: colors.textPrimary }]}>{data.reference || 'DJR1DSXKZH'}</Text>
+              <Text style={[styles.quickValueBold, { color: colors.textPrimary }]}>{data.reference || '-'}</Text>
             </View>
             <View style={styles.quickRow}>
               <Text style={[styles.quickLabel, { color: colors.textSecondary }]}>{t.labelStatus}</Text>
-              <View style={[styles.pillVerified, { backgroundColor: colors.successSurface }]}>
-                <Ionicons name="checkmark-circle" size={11} color="#10B981" />
-                <Text style={styles.pillVerifiedText}>{t.labelSuccessful}</Text>
-              </View>
+              {isVerified ? (
+                <View style={[styles.pillVerified, { backgroundColor: colors.successSurface }]}>
+                  <Ionicons name="checkmark-circle" size={11} color="#10B981" />
+                  <Text style={styles.pillVerifiedText}>{t.labelSuccessful}</Text>
+                </View>
+              ) : isFailed ? (
+                <View style={[styles.pillVerified, { backgroundColor: colors.errorSurface }]}>
+                  <Ionicons name="close-circle" size={11} color="#EF4444" />
+                  <Text style={[styles.pillVerifiedText, { color: '#EF4444' }]}>{t.statusUnable}</Text>
+                </View>
+              ) : (
+                <View style={[styles.pillVerified, { backgroundColor: colors.surfaceSubtle }]}>
+                  <Text style={[styles.pillVerifiedText, { color: colors.textSecondary }]}>{t.statusPending}</Text>
+                </View>
+              )}
             </View>
             <View style={styles.quickRow}>
               <Text style={[styles.quickLabel, { color: colors.textSecondary }]}>{t.labelTime}</Text>
-              <Text style={[styles.quickValue, { color: colors.textPrimary }]}>{data.transactionTime || '2026/10/27 21:37:57'}</Text>
+              <Text style={[styles.quickValue, { color: colors.textPrimary }]}>{data.transactionTime || '-'}</Text>
             </View>
           </View>
         </View>
@@ -132,15 +177,15 @@ export default function ReceiptDetailsScreen() {
         <View style={[styles.detailsTable, { backgroundColor: colors.surface, borderColor: colors.surfaceBorder }]}>
           <View style={[styles.tableRow, { borderBottomColor: colors.divider }]}>
             <Text style={[styles.tableLabel, { color: colors.textSecondary }]}>{t.labelTransactionTo}</Text>
-            <Text style={[styles.tableValue, { color: colors.textPrimary }]}>{data.receiverName || 'Zemensa Behaylu'}</Text>
+            <Text style={[styles.tableValue, { color: colors.textPrimary }]}>{data.receiverName || '-'}</Text>
           </View>
           <View style={[styles.tableRow, { borderBottomColor: colors.divider }]}>
             <Text style={[styles.tableLabel, { color: colors.textSecondary }]}>{t.labelReceiverAccount}</Text>
-            <Text style={[styles.tableValue, { color: colors.textPrimary }]}>{data.receiverAccount || 'HO'}</Text>
+            <Text style={[styles.tableValue, { color: colors.textPrimary }]}>{data.receiverAccount || '-'}</Text>
           </View>
           <View style={[styles.tableRow, { borderBottomColor: colors.divider }]}>
             <Text style={[styles.tableLabel, { color: colors.textSecondary }]}>{t.labelPayerName}</Text>
-            <Text style={[styles.tableValueFaded, { color: colors.textTertiary }]}>{data.senderName || '(not available)'}</Text>
+            <Text style={[styles.tableValueFaded, { color: colors.textTertiary }]}>{data.senderName || '-'}</Text>
           </View>
           <View style={[styles.tableRow, { borderBottomColor: colors.divider }]}>
             <Text style={[styles.tableLabel, { color: colors.textSecondary }]}>{t.labelServiceFee}</Text>
@@ -148,13 +193,57 @@ export default function ReceiptDetailsScreen() {
           </View>
           <View style={[styles.tableRow, { borderBottomColor: colors.divider }]}>
             <Text style={[styles.tableLabel, { color: colors.textSecondary }]}>{t.labelTotalPaid}</Text>
-            <Text style={[styles.tableValue, { color: colors.textPrimary }]}>101.00 ETB</Text>
+            <Text style={[styles.tableValue, { color: colors.textPrimary }]}>
+              {data.amount ? data.amount.replace(/^-/, '') : '-'}
+            </Text>
           </View>
           <View style={[styles.tableRow, { borderBottomWidth: 0 }]}>
             <Text style={[styles.tableLabel, { color: colors.textSecondary }]}>{t.labelCurrency}</Text>
-            <Text style={[styles.tableValue, { color: colors.textPrimary }]}>ETB</Text>
+            <Text style={[styles.tableValue, { color: colors.textPrimary }]}>{data.currency || 'ETB'}</Text>
           </View>
         </View>
+
+        {/* Scanned Receipt Image Card (if present) */}
+        {data.imageUri ? (
+          <View style={[styles.receiptImageCard, { backgroundColor: colors.surface, borderColor: colors.surfaceBorder }]}>
+            <View style={styles.receiptImageHeader}>
+              <View style={styles.receiptImageHeaderLeft}>
+                <Ionicons name="image-outline" size={17} color={colors.primaryBlue} style={{ marginRight: 6 }} />
+                <Text style={[styles.receiptImageHeaderTitle, { color: colors.textPrimary }]}>
+                  {t.labelScannedReceipt || 'Scanned Receipt Image'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setFullscreenModal(true)}
+                style={[styles.expandPill, { backgroundColor: isDark ? '#1F2937' : '#F1F5F9' }]}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="expand-outline" size={12} color={colors.textPrimary} style={{ marginRight: 4 }} />
+                <Text style={[styles.expandPillText, { color: colors.textPrimary }]}>
+                  {t.labelTapToZoom || 'Tap to Zoom'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              onPress={() => setFullscreenModal(true)}
+              activeOpacity={0.9}
+              style={[styles.imageWrapper, { backgroundColor: isDark ? '#000000' : '#F8FAFC' }]}
+            >
+              <Image
+                source={{ uri: data.imageUri }}
+                style={styles.receiptImagePreview}
+                resizeMode="contain"
+              />
+              <View style={styles.imageOverlayBadge}>
+                <Ionicons name="search" size={12} color="#FFFFFF" style={{ marginRight: 5 }} />
+                <Text style={styles.imageOverlayText}>
+                  {t.labelTapToZoom || 'Tap to Zoom'}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         {/* Share Button */}
         <TouchableOpacity
@@ -169,6 +258,40 @@ export default function ReceiptDetailsScreen() {
         {/* Non-Intrusive Sponsored Space */}
         <AdPlaceholder variant="banner" style={{ marginTop: 20 }} />
       </ScrollView>
+
+      {/* Fullscreen Image Zoom Modal */}
+      {data.imageUri ? (
+        <Modal
+          visible={fullscreenModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setFullscreenModal(false)}
+        >
+          <View style={styles.fullscreenBackdrop}>
+            <SafeAreaView style={styles.fullscreenSafe} edges={['top', 'bottom']}>
+              <View style={styles.fullscreenHeader}>
+                <Text style={styles.fullscreenHeaderTitle}>
+                  {t.labelScannedReceipt || 'Scanned Receipt Image'}
+                </Text>
+                <TouchableOpacity
+                  style={styles.fullscreenCloseBtn}
+                  onPress={() => setFullscreenModal(false)}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                >
+                  <Ionicons name="close" size={24} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+              <View style={styles.fullscreenImageContainer}>
+                <Image
+                  source={{ uri: data.imageUri }}
+                  style={styles.fullscreenImage}
+                  resizeMode="contain"
+                />
+              </View>
+            </SafeAreaView>
+          </View>
+        </Modal>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -312,5 +435,104 @@ const styles = StyleSheet.create({
   shareOutlineBtnText: {
     fontSize: 15,
     fontWeight: '700',
+  },
+  receiptImageCard: {
+    width: '100%',
+    borderRadius: 16,
+    borderWidth: 1.5,
+    padding: 14,
+    marginBottom: 20,
+  },
+  receiptImageHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  receiptImageHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  receiptImageHeaderTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  expandPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 9,
+    borderRadius: 12,
+  },
+  expandPillText: {
+    fontSize: 11.5,
+    fontWeight: '600',
+  },
+  imageWrapper: {
+    width: '100%',
+    height: 180,
+    borderRadius: 12,
+    overflow: 'hidden',
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  receiptImagePreview: {
+    width: '100%',
+    height: '100%',
+  },
+  imageOverlayBadge: {
+    position: 'absolute',
+    bottom: 8,
+    right: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+  },
+  imageOverlayText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  fullscreenBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+  },
+  fullscreenSafe: {
+    flex: 1,
+  },
+  fullscreenHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+  },
+  fullscreenHeaderTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  fullscreenCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fullscreenImageContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingBottom: 20,
+  },
+  fullscreenImage: {
+    width: '100%',
+    height: '100%',
   },
 });

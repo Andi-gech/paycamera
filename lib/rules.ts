@@ -116,6 +116,8 @@ export const I18N = {
     labelTime: 'Transaction Time',
     officialVerified: 'Official receipt verified',
     officialResponse: 'Official source response',
+    labelScannedReceipt: 'Scanned Receipt Image',
+    labelTapToZoom: 'Tap to zoom',
     btnViewDetails: 'View Details',
     btnTryAgain: 'Try Again',
 
@@ -154,6 +156,15 @@ export const I18N = {
     language: 'Language',
     saveRules: 'Save Settings & Rules',
     savedSuccess: 'Settings and custom rules saved successfully!',
+
+    // No Network / Connectivity
+    noNetworkTitle: 'No Reliable Network',
+    noNetworkSub: 'Unable to connect to the internet. Verifying receipts requires an active network connection to reach official banking servers.',
+    noNetworkRetry: 'Check Connection',
+    noNetworkDismiss: 'Dismiss',
+    noNetworkChecking: 'Checking network connection...',
+    networkRestored: 'Internet connection restored!',
+    networkOfflineStatus: 'Offline — No reliable internet',
   },
 
   am: {
@@ -206,6 +217,8 @@ export const I18N = {
     labelTime: 'የተከናወነበት ሰዓት',
     officialVerified: 'ኦፊሴላዊ ደረሰኝ ተረጋግጧል',
     officialResponse: 'የባንክ ማዕከል ምላሽ',
+    labelScannedReceipt: 'የተቃኘው ደረሰኝ ምስል',
+    labelTapToZoom: 'ሙሉውን ለማየት ይንኩ',
     btnViewDetails: 'ሙሉ ዝርዝር ይመልከቱ',
     btnTryAgain: 'እንደገና ሞክር',
 
@@ -244,6 +257,15 @@ export const I18N = {
     language: 'ቋንቋ',
     saveRules: 'ቅንብሮችን አስቀምጥ',
     savedSuccess: 'ደንቦች እና ቅንብሮች በተሳካ ሁኔታ ተቀምጠዋል!',
+
+    // No Network / Connectivity
+    noNetworkTitle: 'አስተማማኝ ኔትወርክ የለም',
+    noNetworkSub: 'ከኢንተርኔት ጋር መገናኘት አልተቻለም። ደረሰኞችን ለማረጋገጥ ከባንክ ማዕከላት ጋር የሚያገናኝ አስተማማኝ ኔትወርክ ያስፈልጋል።',
+    noNetworkRetry: 'ግንኙነቱን ፈትሽ',
+    noNetworkDismiss: 'ዝጋ',
+    noNetworkChecking: 'የኔትወርክ ግንኙነት በመፈተሽ ላይ...',
+    networkRestored: 'የኢንተርኔት ግንኙነት ተመልሷል!',
+    networkOfflineStatus: 'ከመስመር ውጭ — ኢንተርኔት የለም',
   },
 
   om: {
@@ -296,6 +318,8 @@ export const I18N = {
     labelTime: 'Yeroo Daldalaa',
     officialVerified: 'Nagaheen seera qabeessi mirkanaa\'e',
     officialResponse: 'Deebii madda baankii',
+    labelScannedReceipt: 'Suuraa Nagahee Skaan Ta\'e',
+    labelTapToZoom: 'Guutummaatti arguuf tuqi',
     btnViewDetails: 'Bal\'ina Ilaali',
     btnTryAgain: 'Irra Deebi\'ii Yaali',
 
@@ -334,5 +358,14 @@ export const I18N = {
     language: 'Afaan',
     saveRules: 'Sajollee fi Seera Olkaawi',
     savedSuccess: 'Seerri fi sajolleen milkaa\'inaan olkaawameera!',
+
+    // No Network / Connectivity
+    noNetworkTitle: 'Netwoorkii Amansiisaan Hin Jiru',
+    noNetworkSub: 'Qunnamtii intarneetii argachuu hin dandeenye. Nagahee baankii mirkaneessuuf netwoorkii amansiisaan barbaachisaadha.',
+    noNetworkRetry: 'Qunnamtii Sakatta\'i',
+    noNetworkDismiss: 'Cufi',
+    noNetworkChecking: 'Qunnamtii sakatta\'aa jira...',
+    networkRestored: 'Qunnamtiin intarneetii deebi\'eera!',
+    networkOfflineStatus: 'Toora Irraa Ala — Intarneetiin Hin Jiru',
   },
 };

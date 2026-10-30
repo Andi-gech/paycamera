@@ -40,6 +40,7 @@ export default function HistoryScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      console.log('[PAGE: Tabs/History (app/(tabs)/history.tsx)] Screen focused, loading history...');
       loadHistory();
     }, [loadHistory])
   );
@@ -59,7 +60,10 @@ export default function HistoryScreen() {
                 borderColor: colors.surfaceBorder,
               },
             ]}
-            onPress={() => router.push({ pathname: '/receipt-details', params: { recordId: item.id } })}
+            onPress={() => {
+              console.log('[PAGE: Tabs/History] History item clicked -> Navigating to /receipt-details with recordId:', item.id);
+              router.push({ pathname: '/receipt-details', params: { recordId: item.id } });
+            }}
             activeOpacity={0.7}
           >
             {/* Status Icon */}

@@ -22,6 +22,10 @@ export default function SettingsScreen() {
   const [localRules, setLocalRules] = useState<VerificationRules>(rules);
 
   useEffect(() => {
+    console.log('[PAGE: Tabs/Settings (app/(tabs)/profile.tsx)] Mounted');
+  }, []);
+
+  useEffect(() => {
     setLocalRules(rules);
   }, [rules]);
 

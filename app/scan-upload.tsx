@@ -1,5 +1,5 @@
 // app/scan-upload.tsx — Scan or Upload Receipt view with theme and translations
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -8,37 +8,69 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
+  TextInput,
+  Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useApp } from '../lib/AppContext';
+import { useNetwork } from '../lib/NetworkContext';
 import { verifyTelebirrReceipt } from '../lib/adapters/telebirrVerifier';
 import { verifyCbeReceipt } from '../lib/adapters/cbeVerifier';
 import { identifyReceiptBankAndReference } from '../lib/adapters/autoIdentifier';
-import { saveVerification, getStoredReceiverAccount } from '../lib/storage';
+import { saveVerification, getStoredReceiverAccount, setStoredReceiverAccount } from '../lib/storage';
 import type { BankId, VerificationStatus } from '../lib/types';
 
 export default function ScanUploadScreen() {
   const router = useRouter();
   const { colors, t } = useApp();
+  const { isReliable, showNoNetworkModal, checkConnection } = useNetwork();
   const { bank = 'telebirr' } = useLocalSearchParams<{ bank?: BankId }>();
   const [loading, setLoading] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState('');
   const [showReceiverModal, setShowReceiverModal] = useState(false);
+  const [pendingUri, setPendingUri] = useState('');
+  const [receiverInput, setReceiverInput] = useState('');
+  const [rememberReceiver, setRememberReceiver] = useState(true);
 
-  const processImageUri = async (uri: string) => {
+  useEffect(() => {
+    console.log('[PAGE: ScanUpload (app/scan-upload.tsx)] Mounted with initial bank param:', bank);
+  }, [bank]);
+
+  const processImageUri = async (uri: string, overrideAccountDigits?: string) => {
+    if (!isReliable) {
+      const isOnline = await checkConnection();
+      if (!isOnline) {
+        showNoNetworkModal();
+        return;
+      }
+    }
+
+    console.log('----------------------------------------------------');
+    console.log('[PAGE: ScanUpload] [Pipeline] STEP 1: Starting processImageUri with URI:', uri, 'overrideAccountDigits:', overrideAccountDigits);
     setLoading(true);
     setLoadingStatus(t.analyzingText);
 
     try {
+      console.log('[PAGE: ScanUpload] [Pipeline] STEP 2: Running identifyReceiptBankAndReference...');
       const detection = await identifyReceiptBankAndReference(uri);
+      console.log('[PAGE: ScanUpload] [Pipeline] STEP 3: Identification complete:', JSON.stringify(detection));
       const effectiveBank: BankId = detection.detectedBank || bank || 'telebirr';
+      console.log('[PAGE: ScanUpload] [Pipeline] STEP 4: Effective bank selected:', effectiveBank);
+      console.log('[PAGE: ScanUpload] [Pipeline] STEP 4: Actual extracted text:\n--- START EXTRACTED TEXT ---\n' + (detection.rawText || detection.rawTextPreview || '(no OCR text)') + '\n--- END EXTRACTED TEXT ---');
 
       if (effectiveBank === 'telebirr') {
-        const data = await verifyTelebirrReceipt(uri);
+        console.log('[PAGE: ScanUpload] [Pipeline] STEP 5 [Telebirr]: Calling verifyTelebirrReceipt (reusing extracted ref & OCR text)...');
+        const data = await verifyTelebirrReceipt(uri, {
+          preExtractedRef: detection.extractedReference,
+          preExtractedText: detection.rawText,
+        });
+        console.log('[PAGE: ScanUpload] [Pipeline] STEP 6 [Telebirr]: Verification returned:', JSON.stringify(data));
         const status: VerificationStatus = data.success ? 'verified' : 'failed';
+        
+        console.log('[PAGE: ScanUpload] [Pipeline] STEP 7 [Telebirr]: Saving record to storage...');
         const record = await saveVerification({
           bank: 'telebirr',
           bankName: 'Telebirr',
@@ -53,22 +85,37 @@ export default function ScanUploadScreen() {
           receiptUrl: data.receiptUrl || null,
           errorMessage: data.error || null,
           isLegacy: false,
+          imageUri: uri,
         });
 
-        router.replace({ pathname: '/verify-result', params: { recordId: record.id } });
+        console.log('[PAGE: ScanUpload] [Pipeline] STEP 8 [Telebirr]: Record saved id =', record.id, '-> Navigating to /verify-result');
+        router.replace({ pathname: '/verify-result', params: { recordId: record.id, imageUri: uri } });
         return;
       }
 
       // CBE flow
-      const savedAccount = await getStoredReceiverAccount();
-      const data = await verifyCbeReceipt(uri, savedAccount || undefined);
+      console.log('[PAGE: ScanUpload] [Pipeline] STEP 5 [CBE]: Getting stored receiver account...');
+      const savedAccount = overrideAccountDigits || await getStoredReceiverAccount();
+      console.log('[PAGE: ScanUpload] [Pipeline] STEP 6 [CBE]: Calling verifyCbeReceipt with account:', savedAccount);
+      const data = await verifyCbeReceipt(
+        uri,
+        savedAccount || undefined,
+        detection.extractedReference,
+        detection.rawText
+      );
+      console.log('[PAGE: ScanUpload] [Pipeline] STEP 7 [CBE]: Verification returned:', JSON.stringify(data));
 
       if (data.needsReceiverAccount) {
+        console.log('[PAGE: ScanUpload] [Pipeline] STEP 8 [CBE]: Receipt needs receiver account, opening modal');
+        setPendingUri(uri);
+        const stored = await getStoredReceiverAccount();
+        if (stored) setReceiverInput(stored);
         setShowReceiverModal(true);
         return;
       }
 
       const status: VerificationStatus = data.success ? 'verified' : 'failed';
+      console.log('[PAGE: ScanUpload] [Pipeline] STEP 8 [CBE]: Saving verification record to storage...');
       const record = await saveVerification({
         bank: 'cbe',
         bankName: 'CBE',
@@ -78,66 +125,99 @@ export default function ScanUploadScreen() {
         status,
         senderName: data.senderName || null,
         receiverName: data.receiverName || null,
-        receiverAccount: null,
+        receiverAccount: savedAccount ? savedAccount.slice(-8) : null,
         transactionTime: data.transactionTime || null,
         receiptUrl: data.receiptUrl || null,
         errorMessage: data.error || null,
         isLegacy: data.isLegacy || false,
+        imageUri: uri,
       });
 
-      router.replace({ pathname: '/verify-result', params: { recordId: record.id } });
+      console.log('[PAGE: ScanUpload] [Pipeline] STEP 9 [CBE]: Record saved id =', record.id, '-> Navigating to /verify-result');
+      router.replace({ pathname: '/verify-result', params: { recordId: record.id, imageUri: uri } });
     } catch (err) {
-      console.error(err);
+      console.error('[PAGE: ScanUpload] [Pipeline] ERROR in processImageUri:', err);
+      if (!isReliable) {
+        showNoNetworkModal();
+      }
       Alert.alert('Verification Error', 'Failed to parse receipt image. Please try again.');
     } finally {
+      console.log('[PAGE: ScanUpload] [Pipeline] processImageUri completed, setting loading = false');
       setLoading(false);
     }
   };
 
   const handleTakePhoto = async () => {
+    console.log('[PAGE: ScanUpload] handleTakePhoto triggered');
     try {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
+      console.log('[PAGE: ScanUpload] Camera permission result:', permission.status, 'granted:', permission.granted);
       if (!permission.granted) {
         Alert.alert('Permission Denied', 'Camera access is required to take photos of receipts.');
         return;
       }
 
+      console.log('[PAGE: ScanUpload] Launching camera...');
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
         allowsEditing: false,
         quality: 0.8,
       });
 
+      console.log('[PAGE: ScanUpload] Camera closed. canceled:', result.canceled, 'assets length:', result.assets?.length);
       if (!result.canceled && result.assets && result.assets.length > 0 && result.assets[0]?.uri) {
         const photoUri = result.assets[0].uri;
-        setTimeout(() => {
-          processImageUri(photoUri);
-        }, 150);
+        console.log('[PAGE: ScanUpload] Camera photo captured with URI:', photoUri);
+        // Small delay to let the camera dismiss animation finish before
+        // starting heavy processing — but keep it awaited so errors
+        // are caught by the surrounding try-catch.
+        await new Promise((r) => setTimeout(r, 150));
+        await processImageUri(photoUri);
       }
     } catch (e) {
-      console.error('Camera Launch Error:', e);
+      console.error('[PAGE: ScanUpload] Camera Launch Error:', e);
       Alert.alert('Camera Error', 'Could not take photo. Please try again or choose from gallery.');
     }
   };
 
   const handleChooseGallery = async () => {
+    console.log('[PAGE: ScanUpload] handleChooseGallery triggered');
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      console.log('[PAGE: ScanUpload] Gallery permission result:', permission.status, 'granted:', permission.granted);
       if (!permission.granted) {
         Alert.alert('Permission Denied', 'Media library access is required to select photos.');
         return;
       }
 
+      console.log('[PAGE: ScanUpload] Launching gallery picker...');
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         quality: 0.9,
       });
 
+      console.log('[PAGE: ScanUpload] Gallery closed. canceled:', result.canceled, 'assets length:', result.assets?.length);
       if (!result.canceled && result.assets && result.assets[0]?.uri) {
+        console.log('[PAGE: ScanUpload] Gallery image selected with URI:', result.assets[0].uri);
         await processImageUri(result.assets[0].uri);
       }
     } catch (e) {
-      console.error(e);
+      console.error('[PAGE: ScanUpload] Gallery Pick Error:', e);
+    }
+  };
+
+  const handleModalReceiverSubmit = async () => {
+    const raw = receiverInput.replace(/\D/g, '');
+    if (raw.length < 8) return;
+    const eight = raw.slice(-8);
+
+    if (rememberReceiver) {
+      await setStoredReceiverAccount(eight);
+    }
+    setShowReceiverModal(false);
+
+    if (pendingUri) {
+      await processImageUri(pendingUri, eight);
     }
   };
 
@@ -205,6 +285,20 @@ export default function ScanUploadScreen() {
                 {t.btnChooseGallery}
               </Text>
             </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.chooseGalleryBtn,
+                { backgroundColor: colors.surface, borderColor: colors.primaryBlue, marginTop: 10 },
+              ]}
+              onPress={() => router.push('/batch-verify')}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="layers-outline" size={20} color={colors.primaryBlue} />
+              <Text style={[styles.chooseGalleryBtnText, { color: colors.primaryBlue }]}>
+                Batch Verify (Multiple Receipts)
+              </Text>
+            </TouchableOpacity>
           </View>
         )}
 
@@ -237,8 +331,34 @@ export default function ScanUploadScreen() {
             </Text>
 
             <Text style={[styles.modalCardDesc, { color: colors.textSecondary }]}>
-              In order to verify this receipt with the bank, we need the receiver's account number.
+              To confirm this legacy CBE receipt, enter the receiver's last 8 account digits.
             </Text>
+
+            <TextInput
+              style={[
+                styles.modalTextInput,
+                { backgroundColor: colors.inputBg, borderColor: colors.inputBorder, color: colors.textPrimary },
+              ]}
+              value={receiverInput}
+              onChangeText={(v) => setReceiverInput(v.replace(/\D/g, ''))}
+              placeholder="e.g. 100012340393"
+              placeholderTextColor={colors.textTertiary}
+              keyboardType="number-pad"
+              maxLength={16}
+              autoFocus
+            />
+
+            <View style={styles.modalRememberRow}>
+              <Text style={[styles.modalRememberText, { color: colors.textSecondary }]}>
+                Remember account for future checks
+              </Text>
+              <Switch
+                value={rememberReceiver}
+                onValueChange={setRememberReceiver}
+                trackColor={{ false: colors.surfaceBorder, true: colors.primaryBlue }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
 
             {/* Action Buttons */}
             <View style={styles.modalBtnRow}>
@@ -254,14 +374,16 @@ export default function ScanUploadScreen() {
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[styles.modalBtnPrimary, { backgroundColor: colors.primaryBlue }]}
-                onPress={() => {
-                  setShowReceiverModal(false);
-                  router.replace('/(tabs)/profile');
-                }}
+                style={[
+                  styles.modalBtnPrimary,
+                  { backgroundColor: colors.primaryBlue },
+                  receiverInput.replace(/\D/g, '').length < 8 && { opacity: 0.5 },
+                ]}
+                disabled={receiverInput.replace(/\D/g, '').length < 8}
+                onPress={handleModalReceiverSubmit}
                 activeOpacity={0.88}
               >
-                <Text style={styles.modalBtnPrimaryText}>Go to Settings</Text>
+                <Text style={styles.modalBtnPrimaryText}>Verify</Text>
                 <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
               </TouchableOpacity>
             </View>
@@ -465,8 +587,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: 'center',
     lineHeight: 19,
-    marginBottom: 24,
+    marginBottom: 20,
     paddingHorizontal: 4,
+  },
+  modalTextInput: {
+    width: '100%',
+    height: 48,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    paddingHorizontal: 14,
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 14,
+  },
+  modalRememberRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    marginBottom: 20,
+  },
+  modalRememberText: {
+    fontSize: 12,
+    flex: 1,
+    paddingRight: 8,
   },
   modalBtnRow: {
     flexDirection: 'row',

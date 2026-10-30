@@ -7,6 +7,8 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
+  Image,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -21,17 +23,28 @@ import { AdPlaceholder } from '../src/components/AdPlaceholder';
 export default function VerifyResultScreen() {
   const router = useRouter();
   const { colors, t, isDark, rules } = useApp();
-  const { recordId } = useLocalSearchParams<{ recordId?: string }>();
+  const { recordId, imageUri: paramImageUri } = useLocalSearchParams<{
+    recordId?: string;
+    imageUri?: string;
+  }>();
   const [record, setRecord] = useState<VerificationRecord | null>(null);
   const [loading, setLoading] = useState(true);
+  const [fullscreenModal, setFullscreenModal] = useState(false);
 
   useEffect(() => {
+    console.log('[PAGE: VerifyResult (app/verify-result.tsx)] Mounted with recordId:', recordId);
     if (recordId) {
+      console.log('[PAGE: VerifyResult] Fetching verification record from storage for id:', recordId);
       getVerificationById(recordId).then((rec) => {
+        console.log('[PAGE: VerifyResult] Loaded record from storage:', JSON.stringify(rec));
         setRecord(rec);
+        setLoading(false);
+      }).catch((err) => {
+        console.error('[PAGE: VerifyResult] Error fetching record:', err);
         setLoading(false);
       });
     } else {
+      console.warn('[PAGE: VerifyResult] No recordId passed in params, using demo fallback');
       setLoading(false);
     }
   }, [recordId]);
@@ -45,19 +58,19 @@ export default function VerifyResultScreen() {
   }
 
   const data: VerificationRecord = record || {
-    id: 'demo',
+    id: '',
     bank: 'telebirr',
     bankName: 'Telebirr',
-    reference: 'DJR1DSXKZH',
-    amount: '-101.00 ETB',
+    reference: '',
+    amount: null,
     currency: 'ETB',
-    status: 'verified',
+    status: 'failed',
     senderName: null,
-    receiverName: 'Zemensa Behaylu',
-    receiverAccount: 'HO',
-    transactionTime: '2026/10/27 21:37:57',
+    receiverName: null,
+    receiverAccount: null,
+    transactionTime: null,
     receiptUrl: null,
-    errorMessage: null,
+    errorMessage: 'No receipt record found.',
     isLegacy: false,
     createdAt: new Date().toISOString(),
   };
@@ -65,17 +78,25 @@ export default function VerifyResultScreen() {
   const isSuccess = data.status === 'verified';
   const ruleCheck = rules ? checkCustomRules(data, rules) : { passed: true, warnings: [] };
   const hasRuleMismatch = isSuccess && !ruleCheck.passed;
+  const displayImageUri = record?.imageUri || paramImageUri || data.imageUri || null;
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
-      {/* Top Navbar */}
-      <View style={styles.navBar}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} activeOpacity={0.7}>
-          <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
-        </TouchableOpacity>
-        <Text style={[styles.navTitle, { color: colors.textPrimary }]}>{t.navResultTitle}</Text>
-        <View style={{ width: 40 }} />
-      </View>
+        {/* Top Navbar */}
+        <View style={styles.navBar}>
+          <TouchableOpacity
+            style={styles.backBtn}
+            onPress={() => {
+              console.log('[PAGE: VerifyResult] Back button pressed');
+              router.back();
+            }}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
+          </TouchableOpacity>
+          <Text style={[styles.navTitle, { color: colors.textPrimary }]}>{t.navResultTitle}</Text>
+          <View style={{ width: 40 }} />
+        </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* Status Graphic & Copy */}
@@ -191,10 +212,52 @@ export default function VerifyResultScreen() {
           <View style={styles.warningAlertBox}>
             <Ionicons name="warning-outline" size={18} color="#EF4444" style={{ marginTop: 1 }} />
             <Text style={styles.warningAlertText}>
-              The official paid amount could not be safely extracted from the receipt table.
+              {data.errorMessage || 'Could not verify or extract official transaction details.'}
             </Text>
           </View>
         )}
+
+        {/* Scanned Receipt Image Card (if image was captured or uploaded) */}
+        {displayImageUri ? (
+          <View style={[styles.receiptImageCard, { backgroundColor: colors.surface, borderColor: colors.surfaceBorder }]}>
+            <View style={styles.receiptImageHeader}>
+              <View style={styles.receiptImageHeaderLeft}>
+                <Ionicons name="image-outline" size={17} color={colors.primaryBlue} style={{ marginRight: 6 }} />
+                <Text style={[styles.receiptImageHeaderTitle, { color: colors.textPrimary }]}>
+                  {t.labelScannedReceipt || 'Scanned Receipt Image'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setFullscreenModal(true)}
+                style={[styles.expandPill, { backgroundColor: isDark ? '#1F2937' : '#F1F5F9' }]}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="expand-outline" size={12} color={colors.textPrimary} style={{ marginRight: 4 }} />
+                <Text style={[styles.expandPillText, { color: colors.textPrimary }]}>
+                  {t.labelTapToZoom || 'Tap to Zoom'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              onPress={() => setFullscreenModal(true)}
+              activeOpacity={0.9}
+              style={[styles.imageWrapper, { backgroundColor: isDark ? '#000000' : '#F8FAFC' }]}
+            >
+              <Image
+                source={{ uri: displayImageUri }}
+                style={styles.receiptImagePreview}
+                resizeMode="contain"
+              />
+              <View style={styles.imageOverlayBadge}>
+                <Ionicons name="search" size={12} color="#FFFFFF" style={{ marginRight: 5 }} />
+                <Text style={styles.imageOverlayText}>
+                  {t.labelTapToZoom || 'Tap to Zoom'}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         {/* Official Source Card */}
         <View style={[styles.officialSourceCard, { backgroundColor: colors.surface, borderColor: colors.surfaceBorder }]}>
@@ -216,12 +279,13 @@ export default function VerifyResultScreen() {
         {isSuccess ? (
           <TouchableOpacity
             style={[styles.primaryBtn, { backgroundColor: colors.primaryBlue }]}
-            onPress={() =>
+            onPress={() => {
+              console.log('[PAGE: VerifyResult] "View Details" clicked -> Navigating to /receipt-details with recordId:', data.id);
               router.push({
                 pathname: '/receipt-details',
                 params: { recordId: data.id },
-              })
-            }
+              });
+            }}
             activeOpacity={0.88}
           >
             <Text style={styles.primaryBtnText}>{t.btnViewDetails}</Text>
@@ -229,7 +293,10 @@ export default function VerifyResultScreen() {
         ) : (
           <TouchableOpacity
             style={[styles.secondaryBtn, { borderColor: colors.primaryBlue, backgroundColor: colors.surface }]}
-            onPress={() => router.replace('/(tabs)')}
+            onPress={() => {
+              console.log('[PAGE: VerifyResult] "Try Again" clicked -> Navigating back to /(tabs)');
+              router.replace('/(tabs)');
+            }}
             activeOpacity={0.8}
           >
             <Text style={[styles.secondaryBtnText, { color: colors.primaryBlue }]}>{t.btnTryAgain}</Text>
@@ -239,6 +306,40 @@ export default function VerifyResultScreen() {
         {/* Non-Intrusive Sponsored Space (Post-Task completion) */}
         <AdPlaceholder variant="rectangle" style={{ marginTop: 22 }} />
       </ScrollView>
+
+      {/* Fullscreen Image Zoom Modal */}
+      {displayImageUri ? (
+        <Modal
+          visible={fullscreenModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setFullscreenModal(false)}
+        >
+          <View style={styles.fullscreenBackdrop}>
+            <SafeAreaView style={styles.fullscreenSafe} edges={['top', 'bottom']}>
+              <View style={styles.fullscreenHeader}>
+                <Text style={styles.fullscreenHeaderTitle}>
+                  {t.labelScannedReceipt || 'Scanned Receipt Image'}
+                </Text>
+                <TouchableOpacity
+                  style={styles.fullscreenCloseBtn}
+                  onPress={() => setFullscreenModal(false)}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                >
+                  <Ionicons name="close" size={24} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+              <View style={styles.fullscreenImageContainer}>
+                <Image
+                  source={{ uri: displayImageUri }}
+                  style={styles.fullscreenImage}
+                  resizeMode="contain"
+                />
+              </View>
+            </SafeAreaView>
+          </View>
+        </Modal>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -443,5 +544,104 @@ const styles = StyleSheet.create({
   secondaryBtnText: {
     fontSize: 15,
     fontWeight: '700',
+  },
+  receiptImageCard: {
+    width: '100%',
+    borderRadius: 16,
+    borderWidth: 1.5,
+    padding: 14,
+    marginBottom: 20,
+  },
+  receiptImageHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  receiptImageHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  receiptImageHeaderTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  expandPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 9,
+    borderRadius: 12,
+  },
+  expandPillText: {
+    fontSize: 11.5,
+    fontWeight: '600',
+  },
+  imageWrapper: {
+    width: '100%',
+    height: 180,
+    borderRadius: 12,
+    overflow: 'hidden',
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  receiptImagePreview: {
+    width: '100%',
+    height: '100%',
+  },
+  imageOverlayBadge: {
+    position: 'absolute',
+    bottom: 8,
+    right: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+  },
+  imageOverlayText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  fullscreenBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+  },
+  fullscreenSafe: {
+    flex: 1,
+  },
+  fullscreenHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+  },
+  fullscreenHeaderTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  fullscreenCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fullscreenImageContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingBottom: 20,
+  },
+  fullscreenImage: {
+    width: '100%',
+    height: '100%',
   },
 });

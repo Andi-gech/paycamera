@@ -11,6 +11,7 @@ export interface IdentificationResult {
   confidence: 'high' | 'medium' | 'low';
   rawBarcode?: string;
   rawTextPreview?: string;
+  rawText?: string;
 }
 
 /**
@@ -20,6 +21,7 @@ export interface IdentificationResult {
  * Detects whether the receipt belongs to Telebirr, CBE (Modern or Legacy), Dashen, Awash, etc.
  */
 export async function identifyReceiptBankAndReference(imageUri: string): Promise<IdentificationResult> {
+  console.log('[AutoIdentifier] STEP 1: Preprocessing image uri:', imageUri);
   let preprocessedUri = imageUri;
 
   try {
@@ -29,74 +31,46 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
       { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
     );
     preprocessedUri = manip.uri;
+    console.log('[AutoIdentifier] Image resized to width 1200, preprocessed URI:', preprocessedUri);
   } catch (err) {
-    console.log('[AutoIdentifier] Preprocessing skipped:', err);
+    console.log('[AutoIdentifier] Preprocessing skipped or failed:', err);
   }
 
-  // ── Step 1: Priority Scan Barcode / QR ─────────────────────────
+  // ── Step 2: Priority Scan Barcode / QR ─────────────────────────
+  console.log('[AutoIdentifier] STEP 2: Scanning barcode/QR code with ML Kit...');
   try {
     const barcodes = await BarcodeScanning.scan(preprocessedUri);
+    console.log('[AutoIdentifier] Barcodes found count:', barcodes ? barcodes.length : 0);
     if (barcodes && barcodes.length > 0) {
       for (const bc of barcodes) {
         const val = bc.value?.trim() || '';
+        console.log('[AutoIdentifier] Barcode candidate value:', val);
         if (!val) continue;
-
-        // Check for CBE URLs or Tokens
-        if (
-          val.includes('mbreciept.cbe.com.et') ||
-          val.includes('mb.cbe.com.et') ||
-          val.includes('apps.cbe.com.et') ||
-          /^https:\/\/mbreciept\.cbe\.com\.et\//i.test(val)
-        ) {
-          const match = val.match(/mbreciept\.cbe\.com\.et\/([^\s/?#]+)/i);
-          return {
-            detectedBank: 'cbe',
-            extractedReference: match ? match[1] : val,
-            confidence: 'high',
-            rawBarcode: val,
-          };
-        }
-
-        // CBE Modern Token prefix (v2-..., fHCx...)
-        if (/^(v\d{1,2}-[A-Za-z0-9_-]+|fHCx[A-Za-z0-9]+)/.test(val)) {
-          return {
-            detectedBank: 'cbe',
-            extractedReference: val,
-            confidence: 'high',
-            rawBarcode: val,
-          };
-        }
-
-        // CBE Legacy FT reference
-        if (/^FT[A-Z0-9]{10,12}/i.test(val)) {
-          return {
-            detectedBank: 'cbe',
-            extractedReference: val,
-            confidence: 'high',
-            rawBarcode: val,
-          };
-        }
 
         // Check for Telebirr URL
         if (val.includes('transactioninfo.ethiotelecom.et/receipt/')) {
           const match = val.match(/receipt\/([A-Za-z0-9]+)/i);
           const candidate = match ? match[1].toUpperCase() : val.toUpperCase();
-          return {
+          const result: IdentificationResult = {
             detectedBank: 'telebirr',
             extractedReference: isValidTelebirrRef(candidate) ? candidate : null,
             confidence: 'high',
             rawBarcode: val,
           };
+          console.log('[AutoIdentifier] Matched Telebirr URL from QR:', result);
+          return result;
         }
 
-        // Telebirr 10-char alphanumeric reference in QR (strictly mixed letters and numbers; never full numbers or full alphabet)
+        // Telebirr 10-char alphanumeric reference in QR
         if (isValidTelebirrRef(val)) {
-          return {
+          const result: IdentificationResult = {
             detectedBank: 'telebirr',
             extractedReference: val.toUpperCase(),
             confidence: 'high',
             rawBarcode: val,
           };
+          console.log('[AutoIdentifier] Matched Telebirr 10-char reference from QR:', result);
+          return result;
         }
       }
     }
@@ -104,16 +78,19 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
     console.log('[AutoIdentifier] Barcode scan error/skipped:', err);
   }
 
-  // ── Step 2: Fallback to ML Kit OCR Text Recognition ──────────────
+  // ── Step 3: Fallback to ML Kit OCR Text Recognition ──────────────
+  console.log('[AutoIdentifier] STEP 3: Running ML Kit Text Recognition (OCR)...');
   try {
     const ocrResult = await TextRecognition.recognize(preprocessedUri);
     const text = ocrResult.text || '';
     const lower = text.toLowerCase();
+    console.log(`[AutoIdentifier] OCR recognized ${text.length} characters`);
+    console.log('[AutoIdentifier] STEP 4: Actual extracted text:\n--- START EXTRACTED OCR TEXT ---\n' + (text || '(empty)') + '\n--- END EXTRACTED OCR TEXT ---');
 
-    // ── Priority 1: Telebirr Checks ──
-    // Many Telebirr receipts (like "Transfer to Bank") mention other banks (e.g. CBE, Dashen, Awash)
-    // as the destination receiving bank. If Telebirr branding or indicators are present,
-    // this transaction was processed via Telebirr and MUST be identified as Telebirr!
+    const extractedTelebirrRef = extractTelebirrRefFromText(text);
+    console.log('[AutoIdentifier] STEP 4: Extracted Telebirr reference candidate:', extractedTelebirrRef);
+
+    // ── Priority 1: Telebirr Checks (Structure & Layout First) ──
     const hasTelebirrExplicit =
       lower.includes('telebirr') ||
       lower.includes('ቴሌብር') ||
@@ -122,34 +99,32 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
       lower.includes('ኢትዮ ቴሌኮም') ||
       lower.includes('transactioninfo.ethiotelecom.et');
 
-    const hasTelebirrTransferToBank =
-      lower.includes('transfer to bank') ||
-      lower.includes('ወደ ባንክ') ||
-      lower.includes('send money to bank');
+    const hasTelebirrStructure =
+      (/[-−]\s*\d+[.,]\d{2}\s*\(?\s*ETB\s*\)?/i.test(text) &&
+        /transaction\s*(?:number|type|time)/i.test(text) &&
+        /bank\s*(?:account\s*number|name)/i.test(text)) ||
+      (extractedTelebirrRef && /transfer\s*to\s*bank/i.test(text));
 
-    const extractedTelebirrRef = extractTelebirrRefFromText(text);
-
-    if (hasTelebirrExplicit || (hasTelebirrTransferToBank && extractedTelebirrRef)) {
+    if (hasTelebirrExplicit || hasTelebirrStructure || extractedTelebirrRef) {
+      console.log('[AutoIdentifier] Telebirr structure/reference detected — classifying as Telebirr');
       return {
         detectedBank: 'telebirr',
         extractedReference: extractedTelebirrRef,
-        confidence: 'high',
+        confidence: extractedTelebirrRef ? 'high' : 'medium',
         rawTextPreview: text.slice(0, 150),
+        rawText: text,
       };
     }
 
-    // ── Priority 2: CBE Checks (Only when NOT a Telebirr receipt) ──
+    // ── Priority 2: CBE Checks (Only true native CBE receipts) ──
+    console.log('[AutoIdentifier] Checking for CBE patterns in OCR text...');
     const cbeUrlMatch = text.match(/mbreciept\.cbe\.com\.et\/([^\s/?#]+)/i);
     const cbeTokenMatch = text.match(/\b(v\d{1,2}-[A-Za-z0-9_-]{10,40})\b/);
     const cbeFtMatch = text.match(/\b(FT[A-Z0-9]{10,12})\b/i);
 
     const hasCbeText =
-      lower.includes('commercial bank of ethiopia') ||
-      lower.includes('cbe mobile') ||
-      lower.includes('cbe birr') ||
       lower.includes('mbreciept.cbe.com.et') ||
-      lower.includes('combanketh') ||
-      lower.includes('የኢትዮጵያ ንግድ ባንክ');
+      lower.includes('combanketh');
 
     if (cbeUrlMatch || cbeTokenMatch || cbeFtMatch || hasCbeText) {
       let ref: string | null = null;
@@ -157,48 +132,21 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
       else if (cbeUrlMatch) ref = cbeUrlMatch[1];
       else if (cbeFtMatch) ref = cbeFtMatch[1].toUpperCase();
 
+      console.log('[AutoIdentifier] CBE match detected, reference:', ref);
       return {
         detectedBank: 'cbe',
         extractedReference: ref,
         confidence: (hasCbeText && ref) || cbeUrlMatch || cbeTokenMatch ? 'high' : 'medium',
         rawTextPreview: text.slice(0, 150),
-      };
-    }
-
-    // ── Priority 3: Dashen Bank ──
-    if (lower.includes('dashen') || lower.includes('ዳሽን')) {
-      return {
-        detectedBank: 'dashen',
-        extractedReference: null,
-        confidence: 'medium',
-        rawTextPreview: text.slice(0, 150),
-      };
-    }
-
-    // ── Priority 4: Awash Bank ──
-    if (lower.includes('awash') || lower.includes('አዋሽ')) {
-      return {
-        detectedBank: 'awash',
-        extractedReference: null,
-        confidence: 'medium',
-        rawTextPreview: text.slice(0, 150),
-      };
-    }
-
-    // ── Priority 5: Fallbacks based on Telebirr reference pattern (never full numbers or full alphabet) ──
-    if (extractedTelebirrRef) {
-      return {
-        detectedBank: 'telebirr',
-        extractedReference: extractedTelebirrRef,
-        confidence: 'medium',
-        rawTextPreview: text.slice(0, 150),
+        rawText: text,
       };
     }
 
   } catch (err) {
-    console.log('[AutoIdentifier] OCR text recognition error:', err);
+    console.error('[AutoIdentifier] OCR text recognition error:', err);
   }
 
+  console.log('[AutoIdentifier] STEP 4: Identification ended with no specific bank match');
   return {
     detectedBank: null,
     extractedReference: null,

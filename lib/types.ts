@@ -10,6 +10,7 @@ export interface BankOption {
   initials: string;
   badgeBg: string;
   badgeTextColor: string;
+  disabled?: boolean;
 }
 
 export const BANK_OPTIONS: BankOption[] = [
@@ -21,6 +22,7 @@ export const BANK_OPTIONS: BankOption[] = [
     initials: 'tele\nbirr',
     badgeBg: '#1976D2',
     badgeTextColor: '#FFFFFF',
+    disabled: false,
   },
   {
     id: 'cbe',
@@ -30,6 +32,7 @@ export const BANK_OPTIONS: BankOption[] = [
     initials: 'CBE',
     badgeBg: '#F59E0B',
     badgeTextColor: '#FFFFFF',
+    disabled: false,
   },
   {
     id: 'dashen',
@@ -39,6 +42,7 @@ export const BANK_OPTIONS: BankOption[] = [
     initials: 'DASHEN',
     badgeBg: '#0D47A1',
     badgeTextColor: '#FFFFFF',
+    disabled: true,
   },
   {
     id: 'awash',
@@ -48,6 +52,7 @@ export const BANK_OPTIONS: BankOption[] = [
     initials: 'AWASH',
     badgeBg: '#00695C',
     badgeTextColor: '#FFFFFF',
+    disabled: true,
   },
   {
     id: 'other',
@@ -57,6 +62,7 @@ export const BANK_OPTIONS: BankOption[] = [
     initials: 'BANK',
     badgeBg: '#78909C',
     badgeTextColor: '#FFFFFF',
+    disabled: true,
   },
 ];
 
@@ -78,4 +84,5 @@ export interface VerificationRecord {
   errorMessage: string | null;
   isLegacy: boolean;
   createdAt: string;   // ISO 8601
+  imageUri?: string | null;
 }

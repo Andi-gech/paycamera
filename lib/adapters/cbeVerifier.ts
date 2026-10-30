@@ -3,6 +3,7 @@ import BarcodeScanning from '@react-native-ml-kit/barcode-scanning';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as pakoModule from 'pako';
+import { triggerGlobalNoNetworkModal } from '../NetworkContext';
 
 export interface CbeVerificationResult {
     success: boolean;
@@ -31,11 +32,14 @@ const CBE_API_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 };
 
-async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = 10000): Promise<Response> {
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = 25000): Promise<Response> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
         return await fetch(url, { ...options, signal: controller.signal });
+    } catch (err) {
+        triggerGlobalNoNetworkModal();
+        throw err;
     } finally {
         clearTimeout(timeoutId);
     }
@@ -438,52 +442,61 @@ function findJsonValue(value: any, keys: string[]): any {
 
 export async function verifyCbeReceipt(
     imageUri: string,
-    receiverAccountDigits?: string
+    receiverAccountDigits?: string,
+    preExtractedRef?: string | null,
+    preExtractedText?: string | null
 ): Promise<CbeVerificationResult> {
     try {
         console.log(`[CBE Verifier] Processing image: ${imageUri}`);
-
-        // 1. Optimize image quality for low-res or blurry photos
-        const manipulatedImage = await ImageManipulator.manipulateAsync(
-            imageUri,
-            [{ resize: { width: 1000 } }],
-            { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
-        );
-
-        // 2. Scan barcode / QR code FIRST if present in the screenshot
-        let detectedReference: string | undefined;
-        let isModernRef = false;
+        let detectedReference: string | undefined = preExtractedRef || undefined;
+        let isModernRef = detectedReference ? !/^FT[A-Za-z0-9]{8,14}$/i.test(detectedReference) : false;
         let barcodeReceiver8: string | undefined;
+        let fullText: string = preExtractedText || '';
 
-        try {
-            const barcodes = await BarcodeScanning.scan(manipulatedImage.uri);
-            console.log(`[CBE Verifier] Barcodes detected: ${barcodes?.length || 0}`);
-            if (barcodes && barcodes.length > 0) {
-                for (const bc of barcodes) {
-                    const rawVal = bc.value?.trim() || '';
-                    if (!rawVal) continue;
-                    console.log(`[CBE Verifier] Barcode scanned: "${rawVal}"`);
+        if (detectedReference && fullText) {
+            console.log(`[CBE Verifier] Reusing pre-extracted reference "${detectedReference}" and OCR text. Skipping duplicate scan & OCR!`);
+        } else {
+            // 1. Optimize image quality for low-res or blurry photos
+            const manipulatedImage = await ImageManipulator.manipulateAsync(
+                imageUri,
+                [{ resize: { width: 1000 } }],
+                { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
+            );
 
-                    const parsed = parseCbeBarcodeOrText(rawVal);
-                    if (parsed.ref) {
-                        detectedReference = parsed.ref;
-                        isModernRef = !!parsed.isModern;
-                        if (parsed.receiver8) barcodeReceiver8 = parsed.receiver8;
-                        break;
+            // 2. Scan barcode / QR code FIRST if present in the screenshot
+            if (!detectedReference) {
+                try {
+                    const barcodes = await BarcodeScanning.scan(manipulatedImage.uri);
+                    console.log(`[CBE Verifier] Barcodes detected: ${barcodes?.length || 0}`);
+                    if (barcodes && barcodes.length > 0) {
+                        for (const bc of barcodes) {
+                            const rawVal = bc.value?.trim() || '';
+                            if (!rawVal) continue;
+                            console.log(`[CBE Verifier] Barcode scanned: "${rawVal}"`);
+
+                            const parsed = parseCbeBarcodeOrText(rawVal);
+                            if (parsed.ref) {
+                                detectedReference = parsed.ref;
+                                isModernRef = !!parsed.isModern;
+                                if (parsed.receiver8) barcodeReceiver8 = parsed.receiver8;
+                                break;
+                            }
+                        }
                     }
+                } catch (barcodeErr) {
+                    console.log('[CBE Verifier] Barcode scanning skipped or not found:', barcodeErr);
                 }
             }
-        } catch (barcodeErr) {
-            console.log('[CBE Verifier] Barcode scanning skipped or not found:', barcodeErr);
-        }
 
-        // 3. Extract text locally via Google ML Kit OCR if barcode did not yield reference
-        let fullText = '';
-        try {
-            const result = await TextRecognition.recognize(manipulatedImage.uri);
-            fullText = result.text || '';
-        } catch (ocrErr) {
-            console.log('[CBE Verifier] OCR text recognition error:', ocrErr);
+            // 3. Extract text locally via Google ML Kit OCR if barcode did not yield reference
+            if (!detectedReference || !fullText) {
+                try {
+                    const result = await TextRecognition.recognize(manipulatedImage.uri);
+                    fullText = result.text || '';
+                } catch (ocrErr) {
+                    console.log('[CBE Verifier] OCR text recognition error:', ocrErr);
+                }
+            }
         }
 
         if (!detectedReference && fullText) {
@@ -509,6 +522,7 @@ export async function verifyCbeReceipt(
         }
 
         console.log(`[CBE Verifier] Final detected reference: "${detectedReference || 'NONE'}" (isModern: ${isModernRef})`);
+        console.log('[CBE Verifier] STEP 4: Actual extracted OCR text:\n--- START EXTRACTED OCR TEXT ---\n' + (fullText || '(empty)') + '\n--- END EXTRACTED OCR TEXT ---');
 
         if (!detectedReference) {
             return {
@@ -524,15 +538,36 @@ export async function verifyCbeReceipt(
 
         // Use receiverAccountDigits if provided, or from barcode if encoded in legacy barcode
         const rawDigits = receiverAccountDigits || barcodeReceiver8 || '';
-        const cleanDigits = rawDigits.replace(/\D/g, '');
-        const receiver8 = cleanDigits.length >= 8 ? cleanDigits.slice(-8) : '';
+        return await verifyCbeTransaction(detectedReference, rawDigits, detectedSuffix);
+    } catch (error) {
+        console.error('CBE Verification Error:', error);
+        return { success: false, error: 'Network or processing error occurred during CBE verification.' };
+    }
+}
 
+export async function verifyCbeTransaction(
+    reference: string,
+    receiverAccountDigits?: string,
+    detectedSuffix?: string
+): Promise<CbeVerificationResult> {
+    try {
+        let detectedReference = (reference || '').trim();
+        const urlMatch = detectedReference.match(/mbreciept\.cbe\.com\.et\/([^\s?#]+)/i);
+        if (urlMatch) {
+            detectedReference = urlMatch[1];
+        }
+
+        const isFtRef = /^FT[A-Za-z0-9]{8,14}$/i.test(detectedReference);
+        if (isFtRef) {
+            detectedReference = detectedReference.toUpperCase();
+        }
+
+        const rawDigits = (receiverAccountDigits || '').replace(/\D/g, '');
+        const receiver8 = rawDigits.length >= 8 ? rawDigits.slice(-8) : '';
         const modernPublicUrl = `https://mbreciept.cbe.com.et/${encodeURIComponent(detectedReference)}`;
 
-        // 4. ALWAYS ATTEMPT MODERN CBE VERIFICATION FIRST
-        // Modern receipts and many recent FT receipts can be resolved via mb.cbe.com.et JSON API
-        // without requiring an account number.
-        if (!receiver8) {
+        // 1. ALWAYS ATTEMPT MODERN CBE VERIFICATION FIRST (if no receiver8 yet or modern ref)
+        if (!receiver8 || !isFtRef) {
             const jsonApiUrl = `https://mb.cbe.com.et/api/v1/transactions/public/transaction-detail/${encodeURIComponent(detectedReference)}`;
             console.log(`[Modern CBE API] Requesting: ${jsonApiUrl}`);
 
@@ -728,7 +763,6 @@ export async function verifyCbeReceipt(
 
             // If modern verification failed:
             // Check if this is an older FT reference that needs the receiver account's last 8 digits
-            const isFtRef = /^FT[A-Za-z0-9]{8,14}$/i.test(detectedReference);
             if (isFtRef) {
                 return {
                     success: false,
@@ -752,7 +786,7 @@ export async function verifyCbeReceipt(
             };
         }
 
-        // 5. LEGACY CBE VERIFICATION (WHEN 8 RECEIVER DIGITS ARE PROVIDED)
+        // 2. LEGACY CBE VERIFICATION (WHEN 8 RECEIVER DIGITS ARE PROVIDED)
         // Query the legacy CBE portal endpoint (apps.cbe.com.et:100/?id={FT}{last8})
         const legacyUrl = getReceiptPageUrl(detectedReference, receiver8);
         console.log('Fetching CBE Legacy URL with receiver digits:', legacyUrl);

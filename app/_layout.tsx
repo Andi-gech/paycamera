@@ -1,7 +1,9 @@
-// app/_layout.tsx — Root Stack navigator with AppProvider
+// app/_layout.tsx — Root Stack navigator with AppProvider and NetworkProvider
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { AppProvider, useApp } from '../lib/AppContext';
+import { NetworkProvider } from '../lib/NetworkContext';
+import { NoNetworkModal } from '../src/components/NoNetworkModal';
 
 function InnerLayout() {
   const { isDark } = useApp();
@@ -24,17 +26,22 @@ function InnerLayout() {
           name="scan-upload"
           options={{ animation: 'slide_from_bottom' }}
         />
+        <Stack.Screen
+          name="batch-verify"
+          options={{ animation: 'slide_from_bottom' }}
+        />
       </Stack>
+      <NoNetworkModal />
     </>
   );
 }
 
-
-
 export default function RootLayout() {
   return (
     <AppProvider>
-      <InnerLayout />
+      <NetworkProvider>
+        <InnerLayout />
+      </NetworkProvider>
     </AppProvider>
   );
 }

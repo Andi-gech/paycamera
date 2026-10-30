@@ -1,5 +1,5 @@
 // app/onboarding.tsx — Full-screen dark onboarding matching reference screen 1
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -41,8 +41,14 @@ const features = [
 export default function OnboardingScreen() {
   const router = useRouter();
 
+  useEffect(() => {
+    console.log('[PAGE: Onboarding (app/onboarding.tsx)] Mounted');
+  }, []);
+
   const handleGetStarted = async () => {
+    console.log('[PAGE: Onboarding] "Get Started" pressed, setting onboarding complete...');
     await setOnboardingComplete();
+    console.log('[PAGE: Onboarding] Navigating to /(tabs)');
     router.replace('/(tabs)');
   };
 
