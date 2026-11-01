@@ -22,13 +22,17 @@ import * as ImagePicker from 'expo-image-picker';
 import { useApp } from '../lib/AppContext';
 import { useNetwork } from '../lib/NetworkContext';
 import { identifyReceiptBankAndReference } from '../lib/adapters/autoIdentifier';
-import { verifyTelebirrReceipt } from '../lib/adapters/telebirrVerifier';
+import { verifyTelebirrReceipt, verifyTelebirrReference } from '../lib/adapters/telebirrVerifier';
+import type { VerificationErrorKind } from '../lib/adapters/telebirrVerifier';
 import { verifyCbeReceipt, getReceiptPageUrl } from '../lib/adapters/cbeVerifier';
-import { isValidTelebirrRef, getOcrReferenceVariants } from '../lib/adapters/telebirrUtils';
-import { parseOfficialTelebirrHtml } from '../src/providers/telebirrOfficialScraper';
+import { verifyBoaReceipt, verifyBoaTransaction } from '../lib/adapters/boaVerifier';
+import { isValidTelebirrRef } from '../lib/adapters/telebirrUtils';
 import { saveVerification, getStoredReceiverAccount } from '../lib/storage';
 import { BankLogo } from '../src/components/BankLogos';
-import type { BankId, VerificationRecord, VerificationStatus } from '../lib/types';
+import type { BankId, VerificationStatus } from '../lib/types';
+
+type FailureKind = 'network' | 'fake' | 'not_found';
+type Outcome = 'verified' | 'failed' | 'fake';
 
 interface BatchItemResult {
   id: string;
@@ -43,14 +47,38 @@ interface BatchItemResult {
   receiverName: string | null;
   senderName: string | null;
   errorMessage: string | null;
+  failureKind?: FailureKind;
   recordId?: string;
 }
+
+const NETWORK_MESSAGE_REGEX = /network|time[d\s-]?out|reach|connect|dns|gateway|offline/i;
+
+const classifyFailure = (
+  kind: VerificationErrorKind | undefined,
+  message: string | null | undefined
+): FailureKind => {
+  if (kind) return kind;
+  return message && NETWORK_MESSAGE_REGEX.test(message) ? 'network' : 'not_found';
+};
+
+const getOutcome = (item: BatchItemResult): Outcome =>
+  item.status === 'verified' ? 'verified' : item.failureKind === 'fake' ? 'fake' : 'failed';
+
+// Only network problems are worth retrying; fake / not-found results won't change.
+const isRetryable = (item: BatchItemResult) =>
+  item.status !== 'verified' && item.failureKind === 'network';
+
+const OUTCOME_UI = {
+  verified: { label: 'Verified', icon: 'checkmark-circle', color: '#10B981' },
+  failed: { label: 'Failed', icon: 'alert-circle', color: '#EF4444' },
+  fake: { label: 'Fake', icon: 'ban', color: '#DC2626' },
+} as const;
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function BatchVerifyScreen() {
   const router = useRouter();
-  const { colors, t, isDark } = useApp();
+  const { colors } = useApp();
   const { isReliable, showNoNetworkModal, checkConnection } = useNetwork();
 
   const [mode, setMode] = useState<'gallery' | 'text'>('gallery');
@@ -61,16 +89,17 @@ export default function BatchVerifyScreen() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [currentStage, setCurrentStage] = useState('');
   const [results, setResults] = useState<BatchItemResult[]>([]);
+  const [retryingIds, setRetryingIds] = useState<string[]>([]);
   const abortControllerRef = useRef<boolean>(false);
 
   // Zoomable Image Modal State
   const [zoomModalVisible, setZoomModalVisible] = useState(false);
   const [zoomImageUri, setZoomImageUri] = useState<string | null>(null);
   const [zoomImageTitle, setZoomImageTitle] = useState('');
-  const [zoomImageStatus, setZoomImageStatus] = useState<VerificationStatus | null>(null);
+  const [zoomImageStatus, setZoomImageStatus] = useState<Outcome | null>(null);
   const [zoomScale, setZoomScale] = useState(1);
 
-  const handleOpenZoom = (uri: string, title: string, status?: VerificationStatus) => {
+  const handleOpenZoom = (uri: string, title: string, status?: Outcome) => {
     setZoomImageUri(uri);
     setZoomImageTitle(title);
     setZoomImageStatus(status || null);
@@ -84,25 +113,17 @@ export default function BatchVerifyScreen() {
     setZoomScale(1);
   };
 
-  const handleZoomIn = () => {
-    setZoomScale((prev) => Math.min(prev + 0.5, 4));
-  };
-
-  const handleZoomOut = () => {
-    setZoomScale((prev) => Math.max(prev - 0.5, 1));
-  };
-
-  const handleResetZoom = () => {
-    setZoomScale(1);
-  };
+  const handleZoomIn = () => setZoomScale((prev) => Math.min(prev + 0.5, 4));
+  const handleZoomOut = () => setZoomScale((prev) => Math.max(prev - 0.5, 1));
+  const handleResetZoom = () => setZoomScale(1);
 
   // Extract reference tokens from bulk multiline text
   const extractTokensFromText = (raw: string): string[] => {
     if (!raw.trim()) return [];
     const tokens = raw
       .split(/[\s,;|\n\r]+/)
-      .map((t) => t.trim())
-      .filter((t) => t.length >= 8 && t.length <= 40);
+      .map((tok) => tok.trim())
+      .filter((tok) => tok.length >= 8 && tok.length <= 40);
     return Array.from(new Set(tokens));
   };
 
@@ -110,7 +131,6 @@ export default function BatchVerifyScreen() {
 
   // Pick multiple images from gallery
   const handleSelectImages = async () => {
-    console.log('[PAGE: BatchVerify] Launching multiple image picker...');
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
@@ -127,7 +147,6 @@ export default function BatchVerifyScreen() {
 
       if (!pickerResult.canceled && pickerResult.assets && pickerResult.assets.length > 0) {
         const uris = pickerResult.assets.map((a) => a.uri).filter(Boolean);
-        console.log(`[PAGE: BatchVerify] Selected ${uris.length} images from gallery`);
         setSelectedImages((prev) => Array.from(new Set([...prev, ...uris])));
       }
     } catch (err) {
@@ -144,6 +163,7 @@ export default function BatchVerifyScreen() {
     setSelectedImages([]);
     setTextInput('');
     setResults([]);
+    setRetryingIds([]);
   };
 
   const handleStopProcessing = () => {
@@ -151,89 +171,30 @@ export default function BatchVerifyScreen() {
     setCurrentStage('Aborting remaining items...');
   };
 
-  // Helper to verify a single text reference
+  // Verify a single text reference
   const verifyReferenceToken = async (token: string): Promise<BatchItemResult> => {
     const isTelebirr = isValidTelebirrRef(token) || /^D[A-Za-z0-9]{9}/i.test(token);
     const isCbe = /^FT/i.test(token) || /^(v\d{1,2}-|fHCx)/i.test(token);
 
+    // ---------------- Telebirr ----------------
     if (isTelebirr) {
-      const candidates = getOcrReferenceVariants(token);
-      for (const currentToken of candidates) {
-        const receiptUrl = `https://transactioninfo.ethiotelecom.et/receipt/${currentToken}`;
-        const batchCtrl = new AbortController();
-        const batchTimer = setTimeout(() => batchCtrl.abort(), 25000);
-        try {
-          const resp = await fetch(receiptUrl, {
-            signal: batchCtrl.signal,
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36',
-              'Accept': 'text/html,application/xhtml+xml',
-            },
-          });
-          clearTimeout(batchTimer);
-          if (resp.ok) {
-            const html = await resp.text();
-            const parsed = parseOfficialTelebirrHtml(html);
-            const amountMatch = html.match(/([\d,]+(?:\.\d+)?)\s*Birr/i);
-            const isCompleted = /Completed|Successful/i.test(html) || (parsed.status ? /completed|successful/i.test(parsed.status) : false);
-            const isExplicitlyFailed = parsed.status ? /fail|cancel/i.test(parsed.status) : /transaction not found|invalid transaction/i.test(html);
+      const data = await verifyTelebirrReference(token);
+      const status: VerificationStatus = data.success ? 'verified' : 'failed';
+      const failureKind = data.success ? undefined : classifyFailure(data.errorKind, data.error);
 
-            const hasAmount = parsed.amount !== null || !!amountMatch;
-            const hasReceiptDetails = !!parsed.receiverName || !!parsed.payerName || !!parsed.paymentDate || !!parsed.reference;
-            const isSuccess = hasAmount && !isExplicitlyFailed && (isCompleted || hasReceiptDetails);
-
-            if (isSuccess) {
-              const amountStr = parsed.amount !== null ? `${parsed.amount} ETB` : (amountMatch ? `${amountMatch[1]} ETB` : null);
-              const record = await saveVerification({
-                bank: 'telebirr',
-                bankName: 'Telebirr',
-                reference: parsed.reference || currentToken,
-                amount: amountStr,
-                currency: 'ETB',
-                status: 'verified',
-                senderName: parsed.payerName || null,
-                receiverName: parsed.receiverName || null,
-                receiverAccount: null,
-                transactionTime: parsed.paymentDate || null,
-                receiptUrl,
-                errorMessage: null,
-                isLegacy: false,
-              });
-
-              return {
-                id: token,
-                source: 'reference',
-                inputReference: token,
-                bank: 'telebirr',
-                bankName: 'Telebirr',
-                reference: parsed.reference || currentToken,
-                amount: amountStr,
-                status: 'verified',
-                receiverName: parsed.receiverName || null,
-                senderName: parsed.payerName || null,
-                errorMessage: null,
-                recordId: record.id,
-              };
-            }
-          }
-        } catch (err) {
-          console.warn(`[BatchVerify] Network error verifying Telebirr token ${currentToken}:`, err);
-        }
-      }
-
-      const failedRecord = await saveVerification({
+      const record = await saveVerification({
         bank: 'telebirr',
         bankName: 'Telebirr',
-        reference: token,
-        amount: null,
+        reference: data.transactionNumber || token,
+        amount: data.amount || null,
         currency: 'ETB',
-        status: 'failed',
-        senderName: null,
-        receiverName: null,
+        status,
+        senderName: data.senderName || null,
+        receiverName: data.receiverName || null,
         receiverAccount: null,
-        transactionTime: null,
-        receiptUrl: `https://transactioninfo.ethiotelecom.et/receipt/${token}`,
-        errorMessage: 'Telebirr server did not return a valid receipt for this reference.',
+        transactionTime: data.transactionTime || null,
+        receiptUrl: data.receiptUrl || `https://transactioninfo.ethiotelecom.et/receipt/${token}`,
+        errorMessage: data.error || null,
         isLegacy: false,
       });
 
@@ -243,33 +204,37 @@ export default function BatchVerifyScreen() {
         inputReference: token,
         bank: 'telebirr',
         bankName: 'Telebirr',
-        reference: token,
-        amount: null,
-        status: 'failed',
-        receiverName: null,
-        senderName: null,
-        errorMessage: 'Receipt not found on official server.',
-        recordId: failedRecord.id,
+        reference: data.transactionNumber || token,
+        amount: data.amount || null,
+        status,
+        receiverName: data.receiverName || null,
+        senderName: data.senderName || null,
+        errorMessage: data.error || null,
+        failureKind,
+        recordId: record.id,
       };
     }
 
+    // ---------------- CBE ----------------
     if (isCbe) {
       let cleanRef = token;
       const urlMatch = token.match(/mbreciept\.cbe\.com\.et\/([^\s?#]+)/i);
       if (urlMatch) cleanRef = urlMatch[1];
 
+      let failureKind: FailureKind = 'not_found';
       const apiUrl = `https://mb.cbe.com.et/api/v1/transactions/public/transaction-detail/${cleanRef}`;
       const cbeBatchCtrl = new AbortController();
       const cbeBatchTimer = setTimeout(() => cbeBatchCtrl.abort(), 25000);
+
       try {
         const resp = await fetch(apiUrl, {
           signal: cbeBatchCtrl.signal,
           headers: {
-            'Accept': 'application/json, text/plain, */*',
+            Accept: 'application/json, text/plain, */*',
             'X-App-ID': 'd1292e42-7400-49de-a2d3-9731caa4c819',
             'X-App-Version': '0a01980b-9859-1369-8198-59f403820000',
-            'Origin': 'https://mbreciept.cbe.com.et',
-            'Referer': 'https://mbreciept.cbe.com.et/',
+            Origin: 'https://mbreciept.cbe.com.et',
+            Referer: 'https://mbreciept.cbe.com.et/',
           },
         });
         clearTimeout(cbeBatchTimer);
@@ -308,9 +273,18 @@ export default function BatchVerifyScreen() {
             recordId: record.id,
           };
         }
+
+        if (resp.status >= 500) failureKind = 'network';
       } catch (err) {
+        clearTimeout(cbeBatchTimer);
+        failureKind = 'network';
         console.warn(`[BatchVerify] Network error verifying CBE token ${token}:`, err);
       }
+
+      const failedMessage =
+        failureKind === 'network'
+          ? 'Network problem while contacting the bank.'
+          : 'Receipt record not found in bank portal.';
 
       const failedRecord = await saveVerification({
         bank: 'cbe',
@@ -324,7 +298,7 @@ export default function BatchVerifyScreen() {
         receiverAccount: null,
         transactionTime: null,
         receiptUrl: null,
-        errorMessage: 'CBE official API did not confirm this reference.',
+        errorMessage: failedMessage,
         isLegacy: false,
       });
 
@@ -339,12 +313,55 @@ export default function BatchVerifyScreen() {
         status: 'failed',
         receiverName: null,
         senderName: null,
-        errorMessage: 'Receipt record not found in bank portal.',
+        errorMessage: failedMessage,
+        failureKind,
         recordId: failedRecord.id,
       };
     }
 
-    // Default unknown
+    // ---------------- Bank of Abyssinia (BOA) ----------------
+    const isBoaUrl = /cs\.bankofabyssinia\.com/i.test(token);
+    if (isBoaUrl) {
+      const data = await verifyBoaTransaction(token);
+      const status: VerificationStatus = data.success || data.verified ? 'verified' : 'failed';
+      const failureKind = data.success || data.verified ? undefined : classifyFailure(undefined, data.error);
+      const amountStr =
+        data.amount !== null && data.amount !== undefined ? `${data.amount} ${data.currency || 'ETB'}` : null;
+
+      const record = await saveVerification({
+        bank: 'boa',
+        bankName: 'Bank of Abyssinia',
+        reference: data.transactionNumber || token,
+        amount: amountStr,
+        currency: data.currency || 'ETB',
+        status,
+        senderName: data.senderName || null,
+        receiverName: data.receiverName || null,
+        receiverAccount: data.receiverAccount || null,
+        transactionTime: data.transactionTime || null,
+        receiptUrl: data.receiptUrl || null,
+        errorMessage: data.error || null,
+        isLegacy: false,
+      });
+
+      return {
+        id: token,
+        source: 'reference',
+        inputReference: token,
+        bank: 'boa',
+        bankName: 'Bank of Abyssinia',
+        reference: data.transactionNumber || token,
+        amount: amountStr,
+        status,
+        receiverName: data.receiverName || null,
+        senderName: data.senderName || null,
+        errorMessage: data.error || null,
+        failureKind,
+        recordId: record.id,
+      };
+    }
+
+    // ---------------- Unknown ----------------
     return {
       id: token,
       source: 'reference',
@@ -356,13 +373,13 @@ export default function BatchVerifyScreen() {
       status: 'failed',
       receiverName: null,
       senderName: null,
-      errorMessage: 'Unrecognized reference format (not Telebirr or CBE).',
+      errorMessage: 'Unrecognized reference format (not Telebirr, CBE, or BOA).',
+      failureKind: 'not_found',
     };
   };
 
-  // Helper to verify a single image
+  // Verify a single image
   const verifyImageItem = async (uri: string, index: number): Promise<BatchItemResult> => {
-    console.log(`[PAGE: BatchVerify] Processing image #${index + 1}: ${uri}`);
     const detection = await identifyReceiptBankAndReference(uri);
     const effectiveBank: BankId = detection.detectedBank || 'telebirr';
 
@@ -373,6 +390,8 @@ export default function BatchVerifyScreen() {
       });
 
       const status: VerificationStatus = data.success ? 'verified' : 'failed';
+      const failureKind = data.success ? undefined : classifyFailure(data.errorKind, data.error);
+
       const record = await saveVerification({
         bank: 'telebirr',
         bankName: 'Telebirr',
@@ -401,6 +420,55 @@ export default function BatchVerifyScreen() {
         receiverName: data.receiverName || null,
         senderName: data.senderName || null,
         errorMessage: data.error || null,
+        failureKind,
+        recordId: record.id,
+      };
+    }
+
+    // BOA flow
+    if (effectiveBank === 'boa') {
+      const savedAccount = await getStoredReceiverAccount();
+      const data = await verifyBoaReceipt(
+        uri,
+        savedAccount || undefined,
+        detection.extractedReference || undefined,
+        detection.rawText || undefined
+      );
+
+      const status: VerificationStatus = data.success || data.verified ? 'verified' : 'failed';
+      const failureKind = data.success || data.verified ? undefined : classifyFailure(undefined, data.error);
+      const amountStr =
+        data.amount !== null && data.amount !== undefined ? `${data.amount} ${data.currency || 'ETB'}` : null;
+
+      const record = await saveVerification({
+        bank: 'boa',
+        bankName: 'Bank of Abyssinia',
+        reference: data.transactionNumber || detection.extractedReference || `Item #${index + 1}`,
+        amount: amountStr,
+        currency: data.currency || 'ETB',
+        status,
+        senderName: data.senderName || null,
+        receiverName: data.receiverName || null,
+        receiverAccount: data.receiverAccount || (savedAccount ? savedAccount.slice(-5) : null),
+        transactionTime: data.transactionTime || null,
+        receiptUrl: data.receiptUrl || null,
+        errorMessage: data.error || null,
+        isLegacy: false,
+      });
+
+      return {
+        id: `img-${index}-${Date.now()}`,
+        source: 'image',
+        previewUri: uri,
+        bank: 'boa',
+        bankName: 'Bank of Abyssinia',
+        reference: data.transactionNumber || detection.extractedReference || 'Unknown',
+        amount: amountStr,
+        status,
+        receiverName: data.receiverName || null,
+        senderName: data.senderName || null,
+        errorMessage: data.error || null,
+        failureKind,
         recordId: record.id,
       };
     }
@@ -415,6 +483,8 @@ export default function BatchVerifyScreen() {
     );
 
     const status: VerificationStatus = data.success ? 'verified' : 'failed';
+    const failureKind = data.success ? undefined : classifyFailure(undefined, data.error);
+
     const record = await saveVerification({
       bank: 'cbe',
       bankName: 'CBE',
@@ -443,15 +513,41 @@ export default function BatchVerifyScreen() {
       receiverName: data.receiverName || null,
       senderName: data.senderName || null,
       errorMessage: data.error || null,
+      failureKind,
       recordId: record.id,
     };
+  };
+
+  // Retry a single item (used for network failures)
+  const handleRetryItem = async (item: BatchItemResult, index: number) => {
+    if (processing || retryingIds.includes(item.id)) return;
+    setRetryingIds((prev) => [...prev, item.id]);
+
+    try {
+      const fresh =
+        item.source === 'image' && item.previewUri
+          ? await verifyImageItem(item.previewUri, index)
+          : await verifyReferenceToken(item.inputReference || item.reference);
+
+      setResults((prev) => prev.map((r) => (r.id === item.id ? { ...fresh, id: item.id } : r)));
+    } catch (err) {
+      console.error('[PAGE: BatchVerify] Retry error:', err);
+      Alert.alert('Retry failed', 'Could not verify this item. Check your network and try again.');
+    } finally {
+      setRetryingIds((prev) => prev.filter((id) => id !== item.id));
+    }
   };
 
   // Main Batch Runner
   const handleStartBatch = async () => {
     const totalItems = mode === 'gallery' ? selectedImages.length : detectedTokens.length;
     if (totalItems === 0) {
-      Alert.alert('No Items', mode === 'gallery' ? 'Please select at least one receipt image.' : 'Please enter at least one transaction reference.');
+      Alert.alert(
+        'No Items',
+        mode === 'gallery'
+          ? 'Please select at least one receipt image.'
+          : 'Please enter at least one transaction reference.'
+      );
       return;
     }
 
@@ -463,10 +559,10 @@ export default function BatchVerifyScreen() {
       }
     }
 
-    console.log(`[PAGE: BatchVerify] Starting batch verification of ${totalItems} items in ${mode} mode...`);
     setProcessing(true);
     abortControllerRef.current = false;
     setResults([]);
+    setRetryingIds([]);
     setCurrentIndex(0);
 
     const batchResults: BatchItemResult[] = [];
@@ -480,10 +576,9 @@ export default function BatchVerifyScreen() {
           try {
             const res = await verifyImageItem(selectedImages[i], i);
             batchResults.push(res);
-            setResults([...batchResults]);
           } catch (itemErr) {
             console.error(`[PAGE: BatchVerify] Error on image #${i + 1}:`, itemErr);
-            const fallback: BatchItemResult = {
+            batchResults.push({
               id: `img-${i}-${Date.now()}`,
               source: 'image',
               previewUri: selectedImages[i],
@@ -495,13 +590,11 @@ export default function BatchVerifyScreen() {
               receiverName: null,
               senderName: null,
               errorMessage: 'Failed to process image.',
-            };
-            batchResults.push(fallback);
-            setResults([...batchResults]);
+            });
           }
+          setResults([...batchResults]);
         }
       } else {
-        // Mode === 'text'
         for (let i = 0; i < detectedTokens.length; i++) {
           if (abortControllerRef.current) break;
           setCurrentIndex(i + 1);
@@ -509,10 +602,9 @@ export default function BatchVerifyScreen() {
           try {
             const res = await verifyReferenceToken(detectedTokens[i]);
             batchResults.push(res);
-            setResults([...batchResults]);
           } catch (itemErr) {
             console.error(`[PAGE: BatchVerify] Error on token ${detectedTokens[i]}:`, itemErr);
-            const fallback: BatchItemResult = {
+            batchResults.push({
               id: detectedTokens[i],
               source: 'reference',
               inputReference: detectedTokens[i],
@@ -524,40 +616,45 @@ export default function BatchVerifyScreen() {
               receiverName: null,
               senderName: null,
               errorMessage: 'Error during network check.',
-            };
-            batchResults.push(fallback);
-            setResults([...batchResults]);
+              failureKind: 'network',
+            });
           }
+          setResults([...batchResults]);
         }
       }
     } finally {
       setProcessing(false);
       setCurrentStage('');
-      console.log(`[PAGE: BatchVerify] Batch finished. Total processed: ${batchResults.length}`);
     }
   };
 
+  // Derived stats
+  const totalInputCount = mode === 'gallery' ? selectedImages.length : detectedTokens.length;
+  const verifiedCount = results.filter((r) => r.status === 'verified').length;
+  const fakeCount = results.filter((r) => getOutcome(r) === 'fake').length;
+  const failedCount = results.filter((r) => getOutcome(r) === 'failed').length;
+
+  let totalVerifiedETB = 0;
+  results.forEach((r) => {
+    if (r.status === 'verified' && r.amount) {
+      const num = parseFloat(r.amount.replace(/[^0-9.]/g, ''));
+      if (!isNaN(num)) totalVerifiedETB += num;
+    }
+  });
+
   // Export Summary to Share
   const handleShareSummary = async () => {
-    const verifiedCount = results.filter((r) => r.status === 'verified').length;
-    const failedCount = results.filter((r) => r.status === 'failed').length;
-
-    let totalAmount = 0;
-    results.forEach((r) => {
-      if (r.status === 'verified' && r.amount) {
-        const num = parseFloat(r.amount.replace(/[^0-9.]/g, ''));
-        if (!isNaN(num)) totalAmount += num;
-      }
-    });
-
     const lines = [
       `📊 Cheki Batch Verification Report`,
       `Verified: ${verifiedCount} / ${results.length}`,
-      `Total Verified Amount: ${totalAmount.toLocaleString()} ETB`,
+      `Fake: ${fakeCount}  |  Failed: ${failedCount}`,
+      `Total Verified Amount: ${totalVerifiedETB.toLocaleString()} ETB`,
       `----------------------------------------`,
       ...results.map((r, i) => {
-        const mark = r.status === 'verified' ? '✅' : '❌';
-        return `${i + 1}. ${mark} ${r.bankName}: ${r.reference} — ${r.amount || 'Failed'}`;
+        const outcome = getOutcome(r);
+        const mark = outcome === 'verified' ? '✅' : outcome === 'fake' ? '🚫' : '❌';
+        const tail = outcome === 'verified' ? r.amount || '' : outcome === 'fake' ? 'FAKE' : 'Failed';
+        return `${i + 1}. ${mark} ${r.bankName}: ${r.reference} — ${tail}`;
       }),
       `----------------------------------------`,
       `Verified via Cheki Mobile`,
@@ -569,18 +666,6 @@ export default function BatchVerifyScreen() {
       console.error('[PAGE: BatchVerify] Share error:', err);
     }
   };
-
-  const totalInputCount = mode === 'gallery' ? selectedImages.length : detectedTokens.length;
-  const verifiedCount = results.filter((r) => r.status === 'verified').length;
-  const failedCount = results.filter((r) => r.status === 'failed').length;
-
-  let totalVerifiedETB = 0;
-  results.forEach((r) => {
-    if (r.status === 'verified' && r.amount) {
-      const num = parseFloat(r.amount.replace(/[^0-9.]/g, ''));
-      if (!isNaN(num)) totalVerifiedETB += num;
-    }
-  });
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
@@ -616,12 +701,7 @@ export default function BatchVerifyScreen() {
               size={18}
               color={mode === 'gallery' ? '#FFFFFF' : colors.textSecondary}
             />
-            <Text
-              style={[
-                styles.tabText,
-                { color: mode === 'gallery' ? '#FFFFFF' : colors.textSecondary },
-              ]}
-            >
+            <Text style={[styles.tabText, { color: mode === 'gallery' ? '#FFFFFF' : colors.textSecondary }]}>
               Screenshots
             </Text>
           </TouchableOpacity>
@@ -640,12 +720,7 @@ export default function BatchVerifyScreen() {
               size={18}
               color={mode === 'text' ? '#FFFFFF' : colors.textSecondary}
             />
-            <Text
-              style={[
-                styles.tabText,
-                { color: mode === 'text' ? '#FFFFFF' : colors.textSecondary },
-              ]}
-            >
+            <Text style={[styles.tabText, { color: mode === 'text' ? '#FFFFFF' : colors.textSecondary }]}>
               Bulk References
             </Text>
           </TouchableOpacity>
@@ -658,9 +733,7 @@ export default function BatchVerifyScreen() {
               <View>
                 <View style={styles.cardHeaderRow}>
                   <View>
-                    <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
-                      Receipt Screenshots
-                    </Text>
+                    <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Receipt Screenshots</Text>
                     <Text style={[styles.cardSubtitle, { color: colors.textSecondary }]}>
                       Pick multiple receipt images from your photo library
                     </Text>
@@ -731,9 +804,7 @@ export default function BatchVerifyScreen() {
               <View>
                 <View style={styles.cardHeaderRow}>
                   <View>
-                    <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
-                      Bulk Reference Numbers
-                    </Text>
+                    <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Bulk Reference Numbers</Text>
                     <Text style={[styles.cardSubtitle, { color: colors.textSecondary }]}>
                       Paste references separated by line, comma, or spaces
                     </Text>
@@ -785,9 +856,7 @@ export default function BatchVerifyScreen() {
               activeOpacity={0.88}
             >
               <Ionicons name="flash" size={18} color="#FFFFFF" />
-              <Text style={styles.startBatchBtnText}>
-                Verify Batch ({totalInputCount} items)
-              </Text>
+              <Text style={styles.startBatchBtnText}>Verify Batch ({totalInputCount} items)</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -807,7 +876,6 @@ export default function BatchVerifyScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Progress Bar Track */}
             <View style={[styles.progressTrack, { backgroundColor: colors.surfaceSubtle }]}>
               <View
                 style={[
@@ -845,6 +913,11 @@ export default function BatchVerifyScreen() {
                 <Text style={[styles.statLabel, { color: colors.error }]}>Failed</Text>
               </View>
 
+              <View style={[styles.statBox, { backgroundColor: '#DC262618', borderColor: '#DC262644' }]}>
+                <Text style={[styles.statNum, { color: '#DC2626' }]}>{fakeCount}</Text>
+                <Text style={[styles.statLabel, { color: '#DC2626' }]}>Fake</Text>
+              </View>
+
               <View style={[styles.statBox, { backgroundColor: colors.surface, borderColor: colors.surfaceBorder, flex: 1.4 }]}>
                 <Text style={[styles.statNum, { color: colors.primaryBlue }]} numberOfLines={1}>
                   {totalVerifiedETB > 0 ? `${totalVerifiedETB.toLocaleString()}` : '0.00'}
@@ -857,31 +930,22 @@ export default function BatchVerifyScreen() {
             <Text style={[styles.listHeaderTitle, { color: colors.textPrimary }]}>Verification Items</Text>
 
             {results.map((item, idx) => {
-              const isItemVerified = item.status === 'verified';
+              const outcome = getOutcome(item);
+              const ui = OUTCOME_UI[outcome];
+              const isRetrying = retryingIds.includes(item.id);
+
               return (
-                <TouchableOpacity
+                <View
                   key={item.id}
-                  style={[
-                    styles.resultCard,
-                    { backgroundColor: colors.surface, borderColor: colors.surfaceBorder },
-                  ]}
-                  onPress={() => {
-                    if (item.recordId) {
-                      router.push({
-                        pathname: '/receipt-details',
-                        params: { recordId: item.recordId },
-                      });
-                    }
-                  }}
-                  activeOpacity={0.75}
+                  style={[styles.resultCard, { backgroundColor: colors.surface, borderColor: colors.surfaceBorder }]}
                 >
-                  {/* Actual Image Thumbnail beside verification result (Zoomable by click) */}
+                  {/* Image thumbnail (zoomable) or bank logo */}
                   {item.previewUri ? (
                     <TouchableOpacity
                       style={[styles.resultThumbnailWrap, { borderColor: colors.surfaceBorder }]}
-                      onPress={() => {
-                        handleOpenZoom(item.previewUri!, item.reference || `Receipt #${idx + 1}`, item.status);
-                      }}
+                      onPress={() =>
+                        handleOpenZoom(item.previewUri!, item.reference || `Receipt #${idx + 1}`, outcome)
+                      }
                       activeOpacity={0.8}
                     >
                       <Image source={{ uri: item.previewUri }} style={styles.resultThumbnailImage} resizeMode="cover" />
@@ -890,53 +954,97 @@ export default function BatchVerifyScreen() {
                       </View>
                     </TouchableOpacity>
                   ) : (
-                    <BankLogo bankId={item.bank} size={36} />
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (item.recordId) {
+                          router.push({
+                            pathname: '/receipt-details',
+                            params: { recordId: item.recordId },
+                          });
+                        }
+                      }}
+                      disabled={!item.recordId}
+                      activeOpacity={0.75}
+                    >
+                      <BankLogo bankId={item.bank} size={36} />
+                    </TouchableOpacity>
                   )}
 
-                  <View style={styles.resultMetaColumn}>
+                  <TouchableOpacity
+                    style={styles.resultMetaColumn}
+                    onPress={() => {
+                      if (item.recordId) {
+                        router.push({
+                          pathname: '/receipt-details',
+                          params: { recordId: item.recordId },
+                        });
+                      }
+                    }}
+                    disabled={!item.recordId}
+                    activeOpacity={item.recordId ? 0.75 : 1}
+                  >
                     <View style={styles.resultTitleRow}>
                       <View style={styles.resultTitleLeft}>
-                        {item.previewUri ? (
-                          <BankLogo bankId={item.bank} size={18} />
-                        ) : null}
+                        {item.previewUri ? <BankLogo bankId={item.bank} size={18} /> : null}
                         <Text style={[styles.resultRefText, { color: colors.textPrimary }]} numberOfLines={1}>
                           {item.reference}
                         </Text>
                       </View>
                       {item.amount && (
-                        <Text style={[styles.resultAmountText, { color: colors.textPrimary }]}>
-                          {item.amount}
-                        </Text>
+                        <Text style={[styles.resultAmountText, { color: colors.textPrimary }]}>{item.amount}</Text>
                       )}
                     </View>
 
-                    <Text style={[styles.resultSubText, { color: colors.textSecondary }]} numberOfLines={1}>
+                    <Text style={[styles.resultSubText, { color: colors.textSecondary }]} numberOfLines={2}>
                       {item.receiverName || item.senderName || item.bankName}
                       {item.errorMessage ? ` • ${item.errorMessage}` : ''}
                     </Text>
-                  </View>
+                  </TouchableOpacity>
 
-                  <View
-                    style={[
-                      styles.statusPill,
-                      { backgroundColor: isItemVerified ? colors.successSurface : colors.errorSurface },
-                    ]}
-                  >
-                    <Ionicons
-                      name={isItemVerified ? 'checkmark-circle' : 'alert-circle'}
-                      size={14}
-                      color={isItemVerified ? '#10B981' : colors.error}
-                    />
-                    <Text
-                      style={[
-                        styles.statusPillText,
-                        { color: isItemVerified ? '#10B981' : colors.error },
-                      ]}
+                  <View style={styles.resultRightColumn}>
+                    <TouchableOpacity
+                      style={[styles.statusPill, { backgroundColor: ui.color + '22' }]}
+                      onPress={() => {
+                        if (item.recordId) {
+                          router.push({
+                            pathname: '/receipt-details',
+                            params: { recordId: item.recordId },
+                          });
+                        }
+                      }}
+                      disabled={!item.recordId}
+                      activeOpacity={item.recordId ? 0.75 : 1}
                     >
-                      {isItemVerified ? 'Verified' : 'Failed'}
-                    </Text>
+                      <Ionicons name={ui.icon} size={14} color={ui.color} />
+                      <Text style={[styles.statusPillText, { color: ui.color }]}>{ui.label}</Text>
+                    </TouchableOpacity>
+
+                    {isRetryable(item) && (
+                      <View style={styles.retryRow}>
+                        {isRetrying && (
+                          <ActivityIndicator
+                            size="small"
+                            color={colors.primaryBlue}
+                            style={styles.retryIndicator}
+                          />
+                        )}
+                        <TouchableOpacity
+                          style={[
+                            styles.retryBtn,
+                            { borderColor: colors.primaryBlue },
+                            isRetrying && { opacity: 0.65 },
+                          ]}
+                          onPress={() => handleRetryItem(item, idx)}
+                          disabled={processing || isRetrying}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="refresh" size={12} color={colors.primaryBlue} />
+                          <Text style={[styles.retryBtnText, { color: colors.primaryBlue }]}>Retry</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
                   </View>
-                </TouchableOpacity>
+                </View>
               );
             })}
 
@@ -949,9 +1057,7 @@ export default function BatchVerifyScreen() {
                   activeOpacity={0.8}
                 >
                   <Ionicons name="refresh" size={18} color={colors.primaryBlue} />
-                  <Text style={[styles.secondaryActionBtnText, { color: colors.primaryBlue }]}>
-                    New Batch
-                  </Text>
+                  <Text style={[styles.secondaryActionBtnText, { color: colors.primaryBlue }]}>New Batch</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -969,12 +1075,7 @@ export default function BatchVerifyScreen() {
       </ScrollView>
 
       {/* Zoomable Image Modal */}
-      <Modal
-        visible={zoomModalVisible}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={handleCloseZoom}
-      >
+      <Modal visible={zoomModalVisible} transparent={true} animationType="fade" onRequestClose={handleCloseZoom}>
         <SafeAreaView style={styles.modalBackdrop} edges={['top', 'bottom']}>
           {/* Modal Header */}
           <View style={styles.modalHeader}>
@@ -986,36 +1087,22 @@ export default function BatchVerifyScreen() {
                 <View
                   style={[
                     styles.modalStatusPill,
-                    {
-                      backgroundColor:
-                        zoomImageStatus === 'verified' ? '#10B98122' : '#EF444422',
-                    },
+                    { backgroundColor: OUTCOME_UI[zoomImageStatus].color + '22' },
                   ]}
                 >
                   <Ionicons
-                    name={zoomImageStatus === 'verified' ? 'checkmark-circle' : 'alert-circle'}
+                    name={OUTCOME_UI[zoomImageStatus].icon}
                     size={13}
-                    color={zoomImageStatus === 'verified' ? '#10B981' : '#EF4444'}
+                    color={OUTCOME_UI[zoomImageStatus].color}
                   />
-                  <Text
-                    style={[
-                      styles.modalStatusText,
-                      {
-                        color: zoomImageStatus === 'verified' ? '#10B981' : '#EF4444',
-                      },
-                    ]}
-                  >
-                    {zoomImageStatus === 'verified' ? 'Verified' : 'Failed'}
+                  <Text style={[styles.modalStatusText, { color: OUTCOME_UI[zoomImageStatus].color }]}>
+                    {OUTCOME_UI[zoomImageStatus].label}
                   </Text>
                 </View>
               )}
             </View>
 
-            <TouchableOpacity
-              style={styles.modalCloseBtn}
-              onPress={handleCloseZoom}
-              activeOpacity={0.8}
-            >
+            <TouchableOpacity style={styles.modalCloseBtn} onPress={handleCloseZoom} activeOpacity={0.8}>
               <Ionicons name="close" size={24} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
@@ -1033,12 +1120,7 @@ export default function BatchVerifyScreen() {
             {zoomImageUri && (
               <Image
                 source={{ uri: zoomImageUri }}
-                style={[
-                  styles.modalZoomImage,
-                  {
-                    transform: [{ scale: zoomScale }],
-                  },
-                ]}
+                style={[styles.modalZoomImage, { transform: [{ scale: zoomScale }] }]}
                 resizeMode="contain"
               />
             )}
@@ -1046,38 +1128,16 @@ export default function BatchVerifyScreen() {
 
           {/* Floating Zoom Controls Bar */}
           <View style={styles.zoomControlBar}>
-            <TouchableOpacity
-              style={styles.zoomBtn}
-              onPress={handleZoomOut}
-              disabled={zoomScale <= 1}
-              activeOpacity={0.7}
-            >
-              <Ionicons
-                name="remove"
-                size={22}
-                color={zoomScale <= 1 ? '#666666' : '#FFFFFF'}
-              />
+            <TouchableOpacity style={styles.zoomBtn} onPress={handleZoomOut} disabled={zoomScale <= 1} activeOpacity={0.7}>
+              <Ionicons name="remove" size={22} color={zoomScale <= 1 ? '#666666' : '#FFFFFF'} />
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.zoomResetBtn}
-              onPress={handleResetZoom}
-              activeOpacity={0.7}
-            >
+            <TouchableOpacity style={styles.zoomResetBtn} onPress={handleResetZoom} activeOpacity={0.7}>
               <Text style={styles.zoomResetText}>{Math.round(zoomScale * 100)}% (Reset)</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.zoomBtn}
-              onPress={handleZoomIn}
-              disabled={zoomScale >= 4}
-              activeOpacity={0.7}
-            >
-              <Ionicons
-                name="add"
-                size={22}
-                color={zoomScale >= 4 ? '#666666' : '#FFFFFF'}
-              />
+            <TouchableOpacity style={styles.zoomBtn} onPress={handleZoomIn} disabled={zoomScale >= 4} activeOpacity={0.7}>
+              <Ionicons name="add" size={22} color={zoomScale >= 4 ? '#666666' : '#FFFFFF'} />
             </TouchableOpacity>
           </View>
         </SafeAreaView>
@@ -1406,6 +1466,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 2,
   },
+  resultRightColumn: {
+    alignItems: 'flex-end',
+    gap: 6,
+  },
   statusPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1415,6 +1479,29 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   statusPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  retryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  retryIndicator: {
+    transform: [{ scale: 0.8 }],
+  },
+  retryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    minWidth: 64,
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  retryBtnText: {
     fontSize: 11,
     fontWeight: '700',
   },

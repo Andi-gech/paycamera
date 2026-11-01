@@ -1,6 +1,6 @@
 // lib/types.ts — Shared types for ReceiptCheck
 
-export type BankId = 'telebirr' | 'cbe' | 'dashen' | 'awash' | 'other';
+export type BankId = 'telebirr' | 'cbe' | 'dashen' | 'awash' | 'boa' | 'other';
 
 export interface BankOption {
   id: BankId;
@@ -31,6 +31,16 @@ export const BANK_OPTIONS: BankOption[] = [
     color: '#6A1B9A',
     initials: 'CBE',
     badgeBg: '#F59E0B',
+    badgeTextColor: '#FFFFFF',
+    disabled: false,
+  },
+  {
+    id: 'boa',
+    name: 'Bank of Abyssinia',
+    subtitle: 'BOA / Apollo',
+    color: '#D97706',
+    initials: 'BOA',
+    badgeBg: '#D97706',
     badgeTextColor: '#FFFFFF',
     disabled: false,
   },

@@ -17,6 +17,15 @@ const PROGUARD_RULES = `
 -keep class com.google.mlkit.** { *; }
 -dontwarn com.google.mlkit.**
 
+-keep class com.google.android.odml.** { *; }
+-dontwarn com.google.android.odml.**
+
+-keep class com.google.android.gms.vision.** { *; }
+-dontwarn com.google.android.gms.vision.**
+
+-keep class com.google.android.gms.common.** { *; }
+-dontwarn com.google.android.gms.common.**
+
 -keep class com.google.android.gms.internal.mlkit_vision_text.** { *; }
 -dontwarn com.google.android.gms.internal.mlkit_vision_text.**
 
@@ -54,6 +63,7 @@ function withMLKitManifest(config) {
 
     // Enable large heap so camera photos and OCR image decoding don't trigger OutOfMemoryError
     mainApplication.$['android:largeHeap'] = 'true';
+    mainApplication.$['android:hardwareAccelerated'] = 'true';
 
     if (!mainApplication['meta-data']) {
       mainApplication['meta-data'] = [];
@@ -102,11 +112,16 @@ function withMLKitGradleProperties(config) {
   return withGradleProperties(config, (modConfig) => {
     // Disable R8 minification in release builds to prevent stripping ML Kit native reflection & bridges
     modConfig.modResults = modConfig.modResults.filter(
-      (item) => item.key !== 'android.enableMinifyInReleaseBuilds'
+      (item) => item.key !== 'android.enableMinifyInReleaseBuilds' && item.key !== 'newArchEnabled'
     );
     modConfig.modResults.push({
       type: 'property',
       key: 'android.enableMinifyInReleaseBuilds',
+      value: 'false',
+    });
+    modConfig.modResults.push({
+      type: 'property',
+      key: 'newArchEnabled',
       value: 'false',
     });
     return modConfig;

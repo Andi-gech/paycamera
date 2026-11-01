@@ -3,6 +3,15 @@
     "name": "ልክ pay",
     "slug": "receipt-verify-ethiopia",
     "version": "1.0.0",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/473cc043-9a62-40e2-85a2-6f5602afcc0b",
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
+    },
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "icon": "./assets/icon.png",
@@ -26,6 +35,7 @@
     },
     "plugins": [
       "expo-router",
+      "expo-updates",
       [
         "expo-camera",
         {

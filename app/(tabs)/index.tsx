@@ -20,7 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '../../lib/AppContext';
 import { useNetwork } from '../../lib/NetworkContext';
 import { saveVerification, getStoredReceiverAccount, setStoredReceiverAccount } from '../../lib/storage';
-import { BANK_OPTIONS, type BankId } from '../../lib/types';
+import { BANK_OPTIONS, type BankId, type VerificationStatus } from '../../lib/types';
 import { BankLogo } from '../../src/components/BankLogos';
 import { AdPlaceholder } from '../../src/components/AdPlaceholder';
 
@@ -197,10 +197,73 @@ export default function HomeScreen() {
         return;
       }
 
+      if (selectedBank === 'boa') {
+        await executeBoaVerification(trimmedRef, savedReceiverAccount || undefined);
+        return;
+      }
+
       // CBE verification
       await executeCbeVerification(trimmedRef, savedReceiverAccount || undefined);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const executeBoaVerification = async (trimmedRef: string, accountDigits?: string) => {
+    console.log('[PAGE: Tabs/Home] [BOA] Starting BOA verification for ref:', trimmedRef, 'with account digits:', accountDigits);
+    const { verifyBoaTransaction } = await import('../../lib/adapters/boaVerifier');
+
+    try {
+      const result = await verifyBoaTransaction(trimmedRef, accountDigits);
+      console.log('[PAGE: Tabs/Home] [BOA] Result:', result);
+
+      if (result.status === 'needs_input') {
+        console.log('[PAGE: Tabs/Home] [BOA] Needs account digits, opening modal');
+        setInputDigits(accountDigits || savedReceiverAccount);
+        setShowAccountModal(true);
+        return;
+      }
+
+      const status: VerificationStatus = result.success || result.verified ? 'verified' : 'failed';
+      const record = await saveVerification({
+        bank: 'boa',
+        bankName: 'Bank of Abyssinia',
+        reference: result.transactionNumber || trimmedRef,
+        amount: result.amount !== null && result.amount !== undefined ? `${result.amount} ${result.currency || 'ETB'}` : null,
+        currency: result.currency || 'ETB',
+        status,
+        senderName: result.senderName || null,
+        receiverName: result.receiverName || null,
+        receiverAccount: result.receiverAccount || (accountDigits ? accountDigits.slice(-5) : null),
+        transactionTime: result.transactionTime || null,
+        receiptUrl: result.receiptUrl || null,
+        errorMessage: result.error || null,
+        isLegacy: false,
+      });
+
+      console.log('[PAGE: Tabs/Home] [BOA] Saved record id:', record.id, '-> Navigating to /verify-result');
+      router.push({ pathname: '/verify-result', params: { recordId: record.id } });
+    } catch (boaErr) {
+      console.warn('[PAGE: Tabs/Home] [BOA] Error during BOA verification:', boaErr);
+      if (!isReliable) {
+        showNoNetworkModal();
+      }
+      const record = await saveVerification({
+        bank: 'boa',
+        bankName: 'Bank of Abyssinia',
+        reference: trimmedRef,
+        amount: null,
+        currency: 'ETB',
+        status: 'failed',
+        senderName: null,
+        receiverName: null,
+        receiverAccount: null,
+        transactionTime: null,
+        receiptUrl: null,
+        errorMessage: 'Could not connect to BOA banking API.',
+        isLegacy: false,
+      });
+      router.push({ pathname: '/verify-result', params: { recordId: record.id } });
     }
   };
 
@@ -263,19 +326,24 @@ export default function HomeScreen() {
 
   const handleAccountSubmit = async () => {
     const raw = inputDigits.replace(/\D/g, '');
-    if (raw.length < 8) return;
-    const eight = raw.slice(-8);
+    const minLen = selectedBank === 'boa' ? 5 : 8;
+    if (raw.length < minLen) return;
+    const digits = selectedBank === 'boa' ? raw.slice(-5) : raw.slice(-8);
 
     if (rememberAccount) {
-      setSavedReceiverAccount(eight);
-      await setStoredReceiverAccount(eight);
+      setSavedReceiverAccount(digits);
+      await setStoredReceiverAccount(digits);
     }
     setShowAccountModal(false);
 
-    // Immediately start verification with the newly entered 8 digits!
+    // Immediately start verification with the newly entered digits!
     setLoading(true);
     try {
-      await executeCbeVerification(reference.trim(), eight);
+      if (selectedBank === 'boa') {
+        await executeBoaVerification(reference.trim(), digits);
+      } else {
+        await executeCbeVerification(reference.trim(), digits);
+      }
     } finally {
       setLoading(false);
     }
@@ -292,7 +360,7 @@ export default function HomeScreen() {
   };
 
   const rawClean = inputDigits.replace(/\D/g, '');
-  const isValidDigits = rawClean.length >= 8;
+  const isValidDigits = rawClean.length >= (selectedBank === 'boa' ? 5 : 8);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.ground }]} edges={['top']}>
@@ -360,7 +428,7 @@ export default function HomeScreen() {
           <View style={styles.bankList}>
             {BANK_OPTIONS.map((b) => {
               const active = selectedBank === b.id;
-              const isSupported = (b.id === 'cbe' || b.id === 'telebirr') && !b.disabled;
+              const isSupported = (b.id === 'cbe' || b.id === 'telebirr' || b.id === 'boa') && !b.disabled;
               return (
                 <TouchableOpacity
                   key={b.id}
@@ -509,9 +577,11 @@ export default function HomeScreen() {
       <Modal visible={showAccountModal} transparent animationType="fade">
         <View style={styles.modalShade}>
           <View style={[styles.modalBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <Text style={[styles.modalTitle, { color: colors.ink }]}>Receiver Account</Text>
+            <Text style={[styles.modalTitle, { color: colors.ink }]}>Account Digits Required</Text>
             <Text style={[styles.modalDesc, { color: colors.inkMuted }]}>
-              To confirm this receipt with the bank, enter the receiver's last 8 account digits.
+              {selectedBank === 'boa'
+                ? "To confirm this BOA transaction with the bank, enter the last 5 digits of the receiver's or sender's account."
+                : "To confirm this receipt with the bank, enter the receiver's last 8 account digits."}
             </Text>
 
             <TextInput

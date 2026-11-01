@@ -1,280 +1,495 @@
-// app/onboarding.tsx — Full-screen dark onboarding matching reference screen 1
-import React, { useEffect } from 'react';
+// app/onboarding.tsx — Impeccable, Fully Resolved First-Run Experience
+import React, { useState } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   TouchableOpacity,
-  Dimensions,
+  ScrollView,
   Image,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { setOnboardingComplete } from '../lib/storage';
-import { Colors, FontSize, FontWeight, Spacing, Radius } from '../lib/theme';
+import { useApp } from '../lib/AppContext';
+import { BankLogo } from '../src/components/BankLogos';
+import type { AppLanguage } from '../lib/rules';
 
-const { width, height } = Dimensions.get('window');
 const APP_LOGO = require('../assets/LikPay_Fast_Payment_Logo-removebg-preview.webp');
-
-const features = [
-  {
-    icon: 'shield-checkmark' as const,
-    title: 'Official verification',
-    subtitle: 'Get real bank / issuer data',
-    color: '#00E676',
-  },
-  {
-    icon: 'flash' as const,
-    title: 'Fast & secure',
-    subtitle: 'Quick and reliable checks',
-    color: '#00E5FF',
-  },
-  {
-    icon: 'shield' as const,
-    title: 'Trusted by thousands',
-    subtitle: 'For your peace of mind',
-    color: '#29B6F6',
-  },
-];
 
 export default function OnboardingScreen() {
   const router = useRouter();
-
-  useEffect(() => {
-    console.log('[PAGE: Onboarding (app/onboarding.tsx)] Mounted');
-  }, []);
+  const { t, language, setLanguage, colors, isDark } = useApp();
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleGetStarted = async () => {
-    console.log('[PAGE: Onboarding] "Get Started" pressed, setting onboarding complete...');
-    await setOnboardingComplete();
-    console.log('[PAGE: Onboarding] Navigating to /(tabs)');
-    router.replace('/(tabs)');
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      await setOnboardingComplete();
+      router.replace('/(tabs)');
+    } catch {
+      router.replace('/(tabs)');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
+  const languages: { id: AppLanguage; label: string }[] = [
+    { id: 'en', label: 'English' },
+    { id: 'am', label: 'አማርኛ' },
+    { id: 'om', label: 'Oromoo' },
+  ];
+
+  const highlights = [
+    {
+      icon: 'shield-checkmark-outline' as const,
+      title: t.onboardingSlide1Title,
+      subtitle: t.onboardingSlide1Sub,
+    },
+    {
+      icon: 'server-outline' as const,
+      title: t.onboardingSlide2Title,
+      subtitle: t.onboardingSlide2Sub,
+    },
+    {
+      icon: 'lock-closed-outline' as const,
+      title: t.onboardingSlide3Title,
+      subtitle: t.onboardingSlide3Sub,
+    },
+  ];
+
   return (
-    <View style={styles.container}>
-      {/* Native Pure CSS Layered Waves (no unlinked native libraries) */}
-      <View style={styles.waveOverlay} pointerEvents="none">
-        <View style={styles.waveLayer1} />
-        <View style={styles.waveLayer2} />
-        <View style={styles.waveLayer3} />
-        <View style={styles.waveCircle1} />
-        <View style={styles.waveCircle2} />
+    <SafeAreaView
+      style={[styles.container, { backgroundColor: colors.background }]}
+      edges={['top', 'bottom']}
+    >
+      {/* Top Bar: Brand Logo, Generous Language Selector, Skip Action */}
+      <View style={styles.topBar}>
+        <View
+          style={[
+            styles.brandBox,
+            {
+              backgroundColor: isDark ? '#141414' : '#FFFFFF',
+              borderColor: colors.surfaceBorder,
+            },
+          ]}
+        >
+          <Image
+            source={APP_LOGO}
+            style={styles.brandImage}
+            resizeMode="contain"
+          />
+        </View>
+
+        <View style={styles.topRightActions}>
+          {/* Trilingual Segmented Switcher with >=44px Effective Touch Target */}
+          <View
+            style={[
+              styles.langSegment,
+              {
+                backgroundColor: colors.surfaceSubtle,
+                borderColor: colors.surfaceBorder,
+              },
+            ]}
+          >
+            {languages.map((l) => {
+              const isSelected = language === l.id;
+              return (
+                <TouchableOpacity
+                  key={l.id}
+                  style={[
+                    styles.langPill,
+                    isSelected && {
+                      backgroundColor: colors.surface,
+                      borderWidth: 1,
+                      borderColor: colors.surfaceBorder,
+                      shadowColor: '#000',
+                      shadowOffset: { width: 0, height: 1 },
+                      shadowOpacity: isDark ? 0 : 0.08,
+                      shadowRadius: 2,
+                      elevation: isDark ? 0 : 1,
+                    },
+                  ]}
+                  onPress={() => setLanguage(l.id)}
+                  activeOpacity={0.7}
+                  hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Switch language to ${l.label}`}
+                >
+                  <Text
+                    style={[
+                      styles.langText,
+                      {
+                        color: isSelected
+                          ? colors.textPrimary
+                          : colors.textSecondary,
+                        fontWeight: isSelected ? '600' : '400',
+                      },
+                    ]}
+                  >
+                    {l.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {/* Skip Link with Accessible HitSlop */}
+          <TouchableOpacity
+            style={styles.skipBtn}
+            onPress={handleGetStarted}
+            activeOpacity={0.7}
+            disabled={isSubmitting}
+            hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
+            accessibilityRole="button"
+            accessibilityLabel="Skip onboarding"
+          >
+            <Text style={[styles.skipText, { color: colors.textSecondary }]}>
+              {t.onboardingSkip}
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.content}>
-          {/* Official LikPay Brand Logo */}
-          <View style={styles.logoWrap}>
-            <View style={styles.onboardingLogoBox}>
-              <Image
-                source={APP_LOGO}
-                style={styles.onboardingLogo}
-                resizeMode="contain"
-              />
-            </View>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+      >
+        {/* Hero Section: Unified Color Tokens & Executive Presence */}
+        <View style={styles.heroSection}>
+          <View
+            style={[
+              styles.heroEmblem,
+              {
+                backgroundColor: colors.primaryLight,
+                borderColor: colors.surfaceBorder,
+              },
+            ]}
+          >
+            <Ionicons
+              name="shield-checkmark"
+              size={32}
+              color={colors.primaryBlue}
+            />
           </View>
 
-          <Text style={styles.tagline}>
-            Verify your transactions{'\n'}with confidence
+          <Text style={[styles.headline, { color: colors.textPrimary }]}>
+            {t.onboardingHeadline}
           </Text>
+          <Text style={[styles.subheadline, { color: colors.textSecondary }]}>
+            {t.onboardingSubtitle}
+          </Text>
+        </View>
 
-          {/* Feature List */}
-          <View style={styles.featureList}>
-            {features.map((f, i) => (
-              <View key={i} style={styles.featureItem}>
-                <View style={[styles.featureIconWrap, { backgroundColor: f.color + '22' }]}>
-                  <Ionicons name={f.icon} size={22} color={f.color} />
-                </View>
-                <View style={styles.featureText}>
-                  <Text style={styles.featureTitle}>{f.title}</Text>
-                  <Text style={styles.featureSubtitle}>{f.subtitle}</Text>
-                </View>
+        {/* 3 Value Pillars */}
+        <View style={styles.featureList}>
+          {highlights.map((item, idx) => (
+            <View
+              key={idx}
+              style={[
+                styles.featureCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.surfaceBorder,
+                },
+              ]}
+            >
+              <View
+                style={[
+                  styles.featureIconWrap,
+                  {
+                    backgroundColor: colors.surfaceSubtle,
+                    borderColor: colors.surfaceBorder,
+                  },
+                ]}
+              >
+                <Ionicons
+                  name={item.icon}
+                  size={20}
+                  color={colors.primaryBlue}
+                />
               </View>
-            ))}
+              <View style={styles.featureTextWrap}>
+                <Text
+                  style={[styles.featureTitle, { color: colors.textPrimary }]}
+                >
+                  {item.title}
+                </Text>
+                <Text
+                  style={[
+                    styles.featureSubtitle,
+                    { color: colors.textSecondary },
+                  ]}
+                >
+                  {item.subtitle}
+                </Text>
+              </View>
+            </View>
+          ))}
+        </View>
+
+        {/* Supported Banking Channels Strip */}
+        <View style={styles.supportedBanksWrap}>
+          <Text style={[styles.supportedLabel, { color: colors.textSecondary }]}>
+            Supported Banks & Gateways
+          </Text>
+          <View style={styles.bankPillsRow}>
+            {(['telebirr', 'cbe', 'awash', 'boa', 'dashen'] as const).map(
+              (bankId) => (
+                <View
+                  key={bankId}
+                  style={[
+                    styles.bankPill,
+                    {
+                      backgroundColor: colors.surface,
+                      borderColor: colors.surfaceBorder,
+                    },
+                  ]}
+                >
+                  <BankLogo bankId={bankId} size={22} />
+                </View>
+              )
+            )}
           </View>
         </View>
+      </ScrollView>
 
-        {/* Bottom CTA Actions */}
-        <View style={styles.bottomArea}>
-          <TouchableOpacity
-            style={styles.getStartedBtn}
-            onPress={handleGetStarted}
-            activeOpacity={0.88}
-          >
-            <Text style={styles.getStartedText}>Get Started</Text>
-            <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
-          </TouchableOpacity>
+      {/* Bottom CTA Area: Loading State + Reassuring Local-First Trust Microcopy */}
+      <View
+        style={[
+          styles.bottomArea,
+          {
+            backgroundColor: colors.background,
+            borderTopColor: colors.divider,
+          },
+        ]}
+      >
+        <TouchableOpacity
+          style={[
+            styles.ctaButton,
+            {
+              backgroundColor: isDark ? '#FFFFFF' : '#0F172A',
+              opacity: isSubmitting ? 0.75 : 1,
+            },
+          ]}
+          onPress={handleGetStarted}
+          activeOpacity={0.88}
+          disabled={isSubmitting}
+        >
+          {isSubmitting ? (
+            <ActivityIndicator
+              size="small"
+              color={isDark ? '#000000' : '#FFFFFF'}
+            />
+          ) : (
+            <>
+              <Text
+                style={[
+                  styles.ctaButtonText,
+                  { color: isDark ? '#000000' : '#FFFFFF' },
+                ]}
+              >
+                {t.onboardingGetStarted}
+              </Text>
+              <Ionicons
+                name="arrow-forward"
+                size={16}
+                color={isDark ? '#000000' : '#FFFFFF'}
+              />
+            </>
+          )}
+        </TouchableOpacity>
 
-          <TouchableOpacity
-            onPress={handleGetStarted}
-            style={styles.loginLink}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.loginLinkText}>I already have an account</Text>
-          </TouchableOpacity>
+        {/* Reassuring Offline / Local-First Microcopy (Replaces Fake Account Link) */}
+        <View style={styles.privacyNoteRow}>
+          <Ionicons
+            name="lock-closed-outline"
+            size={13}
+            color={colors.textSecondary}
+          />
+          <Text style={[styles.privacyNoteText, { color: colors.textSecondary }]}>
+            {t.onboardingPrivacyNote}
+          </Text>
         </View>
-      </SafeAreaView>
-    </View>
+      </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0A1D37',
   },
-  waveOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    overflow: 'hidden',
-  },
-  waveLayer1: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: '60%',
-    backgroundColor: '#0A1D37',
-  },
-  waveLayer2: {
-    position: 'absolute',
-    top: '35%',
-    left: 0,
-    right: 0,
-    height: '40%',
-    backgroundColor: '#0F3460',
-    opacity: 0.85,
-  },
-  waveLayer3: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: '35%',
-    backgroundColor: '#059669',
-    opacity: 0.95,
-  },
-  waveCircle1: {
-    position: 'absolute',
-    bottom: -width * 0.35,
-    left: -width * 0.3,
-    width: width * 1.6,
-    height: width * 1.6,
-    borderRadius: (width * 1.6) / 2,
-    backgroundColor: '#059669',
-    opacity: 0.5,
-  },
-  waveCircle2: {
-    position: 'absolute',
-    bottom: -width * 0.55,
-    right: -width * 0.35,
-    width: width * 1.7,
-    height: width * 1.7,
-    borderRadius: (width * 1.7) / 2,
-    backgroundColor: '#10B981',
-    opacity: 0.35,
-  },
-  safeArea: {
-    flex: 1,
-    justifyContent: 'space-between',
-  },
-  content: {
-    flex: 1,
-    paddingHorizontal: 28,
-    justifyContent: 'center',
-    paddingTop: 10,
-  },
-  logoWrap: {
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  onboardingLogoBox: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    paddingHorizontal: 22,
-    paddingVertical: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.16,
-    shadowRadius: 12,
-    elevation: 4,
-  },
-  onboardingLogo: {
-    width: 170,
-    height: 75,
-  },
-  tagline: {
-    fontSize: 16,
-    color: '#CBD5E1',
-    textAlign: 'center',
-    lineHeight: 23,
-    marginBottom: 38,
-  },
-  featureList: {
-    gap: 22,
-    paddingHorizontal: 4,
-  },
-  featureItem: {
+  topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
+  brandBox: {
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  brandImage: {
+    width: 66,
+    height: 24,
+  },
+  topRightActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  langSegment: {
+    flexDirection: 'row',
+    borderRadius: 8,
+    borderWidth: 1,
+    padding: 2,
+    gap: 2,
+  },
+  langPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    minHeight: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  langText: {
+    fontSize: 12,
+  },
+  skipBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  skipText: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 20,
+  },
+  heroSection: {
+    alignItems: 'center',
+    textAlign: 'center',
+    marginBottom: 26,
+  },
+  heroEmblem: {
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  headline: {
+    fontSize: 22,
+    fontWeight: '600',
+    letterSpacing: -0.4,
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  subheadline: {
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center',
+    maxWidth: 320,
+  },
+  featureList: {
+    gap: 12,
+    marginBottom: 26,
+  },
+  featureCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 14,
   },
   featureIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    width: 42,
+    height: 42,
+    borderRadius: 10,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  featureText: {
+  featureTextWrap: {
     flex: 1,
   },
   featureTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginBottom: 2,
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 3,
   },
   featureSubtitle: {
-    fontSize: 13,
-    color: '#94A3B8',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  supportedBanksWrap: {
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  supportedLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    marginBottom: 10,
+  },
+  bankPillsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  bankPill: {
+    width: 38,
+    height: 38,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   bottomArea: {
-    paddingHorizontal: 28,
-    paddingBottom: 24,
-    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    paddingBottom: 14,
+    borderTopWidth: 1,
   },
-  getStartedBtn: {
+  ctaButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: '#10B981',
-    borderRadius: 28,
-    paddingVertical: 16,
+    borderRadius: 10,
+    paddingVertical: 15,
     width: '100%',
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.28,
-    shadowRadius: 10,
-    elevation: 4,
+    minHeight: 48,
   },
-  getStartedText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#FFFFFF',
+  ctaButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
   },
-  loginLink: {
-    marginTop: 16,
-    paddingVertical: 6,
+  privacyNoteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 10,
   },
-  loginLinkText: {
-    fontSize: 14,
-    color: '#94A3B8',
+  privacyNoteText: {
+    fontSize: 12,
+    fontWeight: '400',
   },
 });

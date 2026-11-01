@@ -1,5 +1,5 @@
 // app/scan-upload.tsx — Scan or Upload Receipt view with theme and translations
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -10,15 +10,18 @@ import {
   Modal,
   TextInput,
   Switch,
+  StatusBar,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useApp } from '../lib/AppContext';
 import { useNetwork } from '../lib/NetworkContext';
 import { verifyTelebirrReceipt } from '../lib/adapters/telebirrVerifier';
 import { verifyCbeReceipt } from '../lib/adapters/cbeVerifier';
+import { verifyBoaReceipt } from '../lib/adapters/boaVerifier';
 import { identifyReceiptBankAndReference } from '../lib/adapters/autoIdentifier';
 import { saveVerification, getStoredReceiverAccount, setStoredReceiverAccount } from '../lib/storage';
 import type { BankId, VerificationStatus } from '../lib/types';
@@ -35,8 +38,36 @@ export default function ScanUploadScreen() {
   const [receiverInput, setReceiverInput] = useState('');
   const [rememberReceiver, setRememberReceiver] = useState(true);
 
+  // In-App CameraView State (Never backgrounded, never killed by Android OS)
+  const [permission, requestPermission] = useCameraPermissions();
+  const cameraRef = useRef<CameraView>(null);
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<'back' | 'front'>('back');
+  const [cameraFlash, setCameraFlash] = useState<'off' | 'on'>('off');
+  const [isCapturing, setIsCapturing] = useState(false);
+
   useEffect(() => {
     console.log('[PAGE: ScanUpload (app/scan-upload.tsx)] Mounted with initial bank param:', bank);
+
+    // If Android killed the activity while camera was active, recover the pending photo on recreation
+    let isMounted = true;
+    const checkPendingImage = async () => {
+      try {
+        const pending = await ImagePicker.getPendingResultAsync();
+        if (!isMounted || !pending) return;
+        if ('canceled' in pending && !pending.canceled && pending.assets && pending.assets.length > 0 && pending.assets[0]?.uri) {
+          console.log('[PAGE: ScanUpload] Recovered pending camera result after OS resume:', pending.assets[0].uri);
+          await processImageUri(pending.assets[0].uri);
+        }
+      } catch (err) {
+        console.warn('[PAGE: ScanUpload] Could not retrieve pending camera result:', err);
+      }
+    };
+
+    checkPendingImage();
+    return () => {
+      isMounted = false;
+    };
   }, [bank]);
 
   const processImageUri = async (uri: string, overrideAccountDigits?: string) => {
@@ -89,6 +120,52 @@ export default function ScanUploadScreen() {
         });
 
         console.log('[PAGE: ScanUpload] [Pipeline] STEP 8 [Telebirr]: Record saved id =', record.id, '-> Navigating to /verify-result');
+        router.replace({ pathname: '/verify-result', params: { recordId: record.id, imageUri: uri } });
+        return;
+      }
+
+      // BOA flow
+      if (effectiveBank === 'boa') {
+        console.log('[PAGE: ScanUpload] [Pipeline] STEP 5 [BOA]: Getting stored receiver account...');
+        const savedAccount = overrideAccountDigits || (await getStoredReceiverAccount());
+        console.log('[PAGE: ScanUpload] [Pipeline] STEP 6 [BOA]: Calling verifyBoaReceipt with account:', savedAccount);
+        const data = await verifyBoaReceipt(
+          uri,
+          savedAccount || undefined,
+          detection.extractedReference || undefined,
+          detection.rawText || undefined
+        );
+        console.log('[PAGE: ScanUpload] [Pipeline] STEP 7 [BOA]: Verification returned:', JSON.stringify(data));
+
+        if (data.status === 'needs_input') {
+          console.log('[PAGE: ScanUpload] [Pipeline] STEP 8 [BOA]: Receipt needs account digits, opening modal');
+          setPendingUri(uri);
+          const stored = await getStoredReceiverAccount();
+          if (stored) setReceiverInput(stored);
+          setShowReceiverModal(true);
+          return;
+        }
+
+        const status: VerificationStatus = data.success || data.verified ? 'verified' : 'failed';
+        console.log('[PAGE: ScanUpload] [Pipeline] STEP 8 [BOA]: Saving verification record to storage...');
+        const record = await saveVerification({
+          bank: 'boa',
+          bankName: 'Bank of Abyssinia',
+          reference: data.transactionNumber || detection.extractedReference || 'Unknown',
+          amount: data.amount !== null && data.amount !== undefined ? `${data.amount} ${data.currency || 'ETB'}` : null,
+          currency: data.currency || 'ETB',
+          status,
+          senderName: data.senderName || null,
+          receiverName: data.receiverName || null,
+          receiverAccount: data.receiverAccount || (savedAccount ? savedAccount.slice(-5) : null),
+          transactionTime: data.transactionTime || null,
+          receiptUrl: data.receiptUrl || null,
+          errorMessage: data.error || null,
+          isLegacy: false,
+          imageUri: uri,
+        });
+
+        console.log('[PAGE: ScanUpload] [Pipeline] STEP 9 [BOA]: Record saved id =', record.id, '-> Navigating to /verify-result');
         router.replace({ pathname: '/verify-result', params: { recordId: record.id, imageUri: uri } });
         return;
       }
@@ -148,35 +225,45 @@ export default function ScanUploadScreen() {
   };
 
   const handleTakePhoto = async () => {
-    console.log('[PAGE: ScanUpload] handleTakePhoto triggered');
+    console.log('[PAGE: ScanUpload] handleTakePhoto triggered — opening in-app camera');
     try {
-      const permission = await ImagePicker.requestCameraPermissionsAsync();
-      console.log('[PAGE: ScanUpload] Camera permission result:', permission.status, 'granted:', permission.granted);
-      if (!permission.granted) {
-        Alert.alert('Permission Denied', 'Camera access is required to take photos of receipts.');
-        return;
+      if (!permission?.granted) {
+        console.log('[PAGE: ScanUpload] Requesting camera permission...');
+        const res = await requestPermission();
+        if (!res.granted) {
+          Alert.alert('Permission Denied', 'Camera access is required to take photos of receipts.');
+          return;
+        }
       }
+      setIsCameraActive(true);
+    } catch (e) {
+      console.error('[PAGE: ScanUpload] Camera permission check error:', e);
+      Alert.alert('Camera Error', 'Could not open camera. Please check camera permissions in settings.');
+    }
+  };
 
-      console.log('[PAGE: ScanUpload] Launching camera...');
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ['images'],
-        allowsEditing: false,
-        quality: 0.8,
+  const captureInAppPhoto = async () => {
+    if (!cameraRef.current || isCapturing) return;
+    setIsCapturing(true);
+    try {
+      console.log('[PAGE: ScanUpload] In-app camera capturing photo...');
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.7,
+        skipProcessing: true,
       });
 
-      console.log('[PAGE: ScanUpload] Camera closed. canceled:', result.canceled, 'assets length:', result.assets?.length);
-      if (!result.canceled && result.assets && result.assets.length > 0 && result.assets[0]?.uri) {
-        const photoUri = result.assets[0].uri;
-        console.log('[PAGE: ScanUpload] Camera photo captured with URI:', photoUri);
-        // Small delay to let the camera dismiss animation finish before
-        // starting heavy processing — but keep it awaited so errors
-        // are caught by the surrounding try-catch.
-        await new Promise((r) => setTimeout(r, 150));
-        await processImageUri(photoUri);
+      if (photo?.uri) {
+        console.log('[PAGE: ScanUpload] In-app camera captured URI:', photo.uri);
+        setIsCameraActive(false);
+        setIsCapturing(false);
+        await processImageUri(photo.uri);
+      } else {
+        setIsCapturing(false);
       }
-    } catch (e) {
-      console.error('[PAGE: ScanUpload] Camera Launch Error:', e);
-      Alert.alert('Camera Error', 'Could not take photo. Please try again or choose from gallery.');
+    } catch (err) {
+      console.error('[PAGE: ScanUpload] In-app camera capture failed:', err);
+      setIsCapturing(false);
+      Alert.alert('Capture Failed', 'Failed to take photo. Please try again.');
     }
   };
 
@@ -208,16 +295,16 @@ export default function ScanUploadScreen() {
 
   const handleModalReceiverSubmit = async () => {
     const raw = receiverInput.replace(/\D/g, '');
-    if (raw.length < 8) return;
-    const eight = raw.slice(-8);
+    if (raw.length < 5) return;
+    const digits = raw.length >= 8 ? raw.slice(-8) : raw.slice(-5);
 
     if (rememberReceiver) {
-      await setStoredReceiverAccount(eight);
+      await setStoredReceiverAccount(digits);
     }
     setShowReceiverModal(false);
 
     if (pendingUri) {
-      await processImageUri(pendingUri, eight);
+      await processImageUri(pendingUri, digits);
     }
   };
 
@@ -331,7 +418,7 @@ export default function ScanUploadScreen() {
             </Text>
 
             <Text style={[styles.modalCardDesc, { color: colors.textSecondary }]}>
-              To confirm this legacy CBE receipt, enter the receiver's last 8 account digits.
+              To confirm this receipt with the bank, enter the account digits (last 5 to 8 digits).
             </Text>
 
             <TextInput
@@ -377,9 +464,9 @@ export default function ScanUploadScreen() {
                 style={[
                   styles.modalBtnPrimary,
                   { backgroundColor: colors.primaryBlue },
-                  receiverInput.replace(/\D/g, '').length < 8 && { opacity: 0.5 },
+                  receiverInput.replace(/\D/g, '').length < 5 && { opacity: 0.5 },
                 ]}
-                disabled={receiverInput.replace(/\D/g, '').length < 8}
+                disabled={receiverInput.replace(/\D/g, '').length < 5}
                 onPress={handleModalReceiverSubmit}
                 activeOpacity={0.88}
               >
@@ -388,6 +475,106 @@ export default function ScanUploadScreen() {
               </TouchableOpacity>
             </View>
           </View>
+        </View>
+      </Modal>
+
+      {/* In-App Camera Viewfinder Modal (Zero OS backgrounding, Zero Shutdown) */}
+      <Modal
+        visible={isCameraActive}
+        animationType="slide"
+        onRequestClose={() => setIsCameraActive(false)}
+        statusBarTranslucent
+      >
+        <View style={styles.cameraContainer}>
+          <CameraView
+            ref={cameraRef}
+            style={StyleSheet.absoluteFill}
+            facing={cameraFacing}
+            flash={cameraFlash}
+            mode="picture"
+          />
+
+          {/* Top Control Bar */}
+          <SafeAreaView style={styles.cameraTopBar}>
+            <TouchableOpacity
+              onPress={() => setIsCameraActive(false)}
+              style={styles.cameraCircleBtn}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="close" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+
+            <View style={styles.cameraHeaderWrap}>
+              <Text style={styles.cameraHeaderTitle}>Scan Receipt</Text>
+            </View>
+
+            <TouchableOpacity
+              onPress={() => setCameraFlash((f) => (f === 'off' ? 'on' : 'off'))}
+              style={[
+                styles.cameraCircleBtn,
+                cameraFlash === 'on' && { backgroundColor: '#F59E0B' },
+              ]}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name={cameraFlash === 'on' ? 'flash' : 'flash-off'}
+                size={20}
+                color="#FFFFFF"
+              />
+            </TouchableOpacity>
+          </SafeAreaView>
+
+          {/* Viewfinder Center Box */}
+          <View style={styles.viewfinderCenterArea} pointerEvents="none">
+            <View style={styles.viewfinderBox}>
+              <View style={[styles.cornerMarker, styles.cornerTL]} />
+              <View style={[styles.cornerMarker, styles.cornerTR]} />
+              <View style={[styles.cornerMarker, styles.cornerBL]} />
+              <View style={[styles.cornerMarker, styles.cornerBR]} />
+            </View>
+            <View style={styles.viewfinderTipBadge}>
+              <Ionicons name="scan-outline" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+              <Text style={styles.viewfinderTipText}>Fit receipt neatly in this frame</Text>
+            </View>
+          </View>
+
+          {/* Bottom Bar Controls */}
+          <SafeAreaView style={styles.cameraBottomBar}>
+            <TouchableOpacity
+              onPress={() => {
+                setIsCameraActive(false);
+                handleChooseGallery();
+              }}
+              style={styles.cameraSideBtn}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="images-outline" size={24} color="#FFFFFF" />
+              <Text style={styles.cameraSideBtnLabel}>Gallery</Text>
+            </TouchableOpacity>
+
+            {/* Shutter Capture Button */}
+            <TouchableOpacity
+              onPress={captureInAppPhoto}
+              disabled={isCapturing}
+              style={styles.shutterRing}
+              activeOpacity={0.7}
+            >
+              {isCapturing ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <View style={styles.shutterCore} />
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => setCameraFacing((c) => (c === 'back' ? 'front' : 'back'))}
+              style={styles.cameraSideBtn}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="camera-reverse-outline" size={24} color="#FFFFFF" />
+              <Text style={styles.cameraSideBtnLabel}>Flip</Text>
+            </TouchableOpacity>
+          </SafeAreaView>
         </View>
       </Modal>
     </SafeAreaView>
@@ -642,5 +829,137 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '700',
+  },
+  cameraContainer: {
+    flex: 1,
+    backgroundColor: '#000000',
+    justifyContent: 'space-between',
+  },
+  cameraTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    zIndex: 10,
+  },
+  cameraCircleBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cameraHeaderWrap: {
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    borderRadius: 20,
+  },
+  cameraHeaderTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  viewfinderCenterArea: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewfinderBox: {
+    width: '82%',
+    height: '62%',
+    maxWidth: 340,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.25)',
+    position: 'relative',
+    backgroundColor: 'rgba(0,0,0,0.05)',
+  },
+  cornerMarker: {
+    position: 'absolute',
+    width: 24,
+    height: 24,
+    borderColor: '#3B82F6',
+  },
+  cornerTL: {
+    top: -2,
+    left: -2,
+    borderTopWidth: 4,
+    borderLeftWidth: 4,
+    borderTopLeftRadius: 12,
+  },
+  cornerTR: {
+    top: -2,
+    right: -2,
+    borderTopWidth: 4,
+    borderRightWidth: 4,
+    borderTopRightRadius: 12,
+  },
+  cornerBL: {
+    bottom: -2,
+    left: -2,
+    borderBottomWidth: 4,
+    borderLeftWidth: 4,
+    borderBottomLeftRadius: 12,
+  },
+  cornerBR: {
+    bottom: -2,
+    right: -2,
+    borderBottomWidth: 4,
+    borderRightWidth: 4,
+    borderBottomRightRadius: 12,
+  },
+  viewfinderTipBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 16,
+    marginTop: 18,
+  },
+  viewfinderTipText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  cameraBottomBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingBottom: 24,
+    paddingTop: 10,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    zIndex: 10,
+  },
+  cameraSideBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 60,
+  },
+  cameraSideBtnLabel: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  shutterRing: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    borderWidth: 4,
+    borderColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.2)',
+  },
+  shutterCore: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: '#FFFFFF',
   },
 });

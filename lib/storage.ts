@@ -76,6 +76,31 @@ export async function setOnboardingComplete(): Promise<void> {
   await setSetting('onboarding_complete', '1');
 }
 
+export async function resetOnboarding(): Promise<void> {
+  const db = await getDb();
+  await db.runAsync("DELETE FROM settings WHERE key = 'onboarding_complete'");
+}
+
+export async function clearAllHistory(): Promise<void> {
+  const db = await getDb();
+  await db.runAsync('DELETE FROM history');
+}
+
+export async function getHistoryStats(): Promise<{ total: number; verified: number; successRate: number }> {
+  try {
+    const db = await getDb();
+    const totalRow = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM history');
+    const verifiedRow = await db.getFirstAsync<{ count: number }>("SELECT COUNT(*) as count FROM history WHERE status = 'verified'");
+    const total = totalRow?.count || 0;
+    const verified = verifiedRow?.count || 0;
+    const successRate = total > 0 ? Math.round((verified / total) * 100) : 100;
+    return { total, verified, successRate };
+  } catch {
+    return { total: 0, verified: 0, successRate: 100 };
+  }
+}
+
+
 export async function getStoredReceiverAccount(): Promise<string> {
   return (await getSetting('cbe_receiver_account')) || '';
 }

@@ -8,6 +8,7 @@
     "@react-native-ml-kit/text-recognition": "^2.0.0",
     "base-64": "^1.0.0",
     "cheerio": "^1.2.0",
+    "crypto-js": "^4.2.0",
     "expo": "~58.0.19",
     "expo-camera": "~58.0.12",
     "expo-constants": "~58.0.13",
@@ -23,6 +24,7 @@
     "expo-router": "~58.0.26",
     "expo-sqlite": "~58.0.0",
     "expo-status-bar": "~58.0.4",
+    "expo-updates": "~58.0.19",
     "pako": "^3.0.3",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
@@ -31,6 +33,7 @@
     "react-native-screens": "~4.30.0"
   },
   "devDependencies": {
+    "@types/crypto-js": "^4.2.2",
     "@types/pako": "^2.0.4",
     "@types/react": "~19.3.0",
     "typescript": "~6.0.3"

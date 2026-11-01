@@ -1,6 +1,6 @@
 // src/components/BankLogos.tsx — Optimized Bank Icon component using local WebP assets
 import React from 'react';
-import { View, Image, StyleSheet, ImageSourcePropType } from 'react-native';
+import { View, Image, StyleSheet, ImageSourcePropType, Text } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { BankId } from '../../lib/types';
 
@@ -8,6 +8,7 @@ import type { BankId } from '../../lib/types';
 const BANK_ICONS: Record<string, ImageSourcePropType> = {
   telebirr: require('../../assets/banks/telebirr.webp'),
   cbe: require('../../assets/banks/cbe.webp'),
+  boa: require('../../assets/banks/boa.webp'),
   dashen: require('../../assets/banks/dashnbank.webp'),
   awash: require('../../assets/banks/awash.webp'),
 };
@@ -26,7 +27,7 @@ export const BankLogo = React.memo(function BankLogo({
   const normalizedId = (bankId || '').toLowerCase().trim();
   const iconSource = BANK_ICONS[normalizedId];
 
-  if (iconSource) {
+    if (iconSource) {
     return (
       <View style={[styles.container, { width: size, height: size }, style]}>
         <Image
@@ -34,6 +35,34 @@ export const BankLogo = React.memo(function BankLogo({
           style={[styles.image, { width: size, height: size }]}
           resizeMode="cover"
         />
+      </View>
+    );
+  }
+
+  if (normalizedId === 'boa') {
+    return (
+      <View
+        style={[
+          styles.container,
+          {
+            width: size,
+            height: size,
+            borderRadius: size * 0.28,
+            backgroundColor: '#D97706',
+          },
+          style,
+        ]}
+      >
+        <Text
+          style={{
+            color: '#FFFFFF',
+            fontWeight: '900',
+            fontSize: size * 0.34,
+            letterSpacing: -0.5,
+          }}
+        >
+          BOA
+        </Text>
       </View>
     );
   }

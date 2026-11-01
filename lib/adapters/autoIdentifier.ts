@@ -5,6 +5,27 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import type { BankId } from '../types';
 import { isValidTelebirrRef, extractTelebirrRefFromText } from './telebirrUtils';
 
+export const extractBoaReferenceFromText = (text: string): string | null => {
+  const normalized = text
+    .replace(/\s+/g, ' ')
+    .replace(/[|]/g, 'I')
+    .trim();
+
+  const patterns = [
+    /(?:transaction\s*(?:ref(?:erence)?|id|no|number)|txn\s*(?:ref|id|no)|reference\s*(?:no|number)?|trn\s*(?:id|no))\s*[:#-]?\s*([A-Z0-9]{10,30})/i,
+    /\b(FT[A-Z0-9]{10,28})\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+
+    if (match?.[1]) {
+      return match[1].toUpperCase();
+    }
+  }
+
+  return null;
+};
 export interface IdentificationResult {
   detectedBank: BankId | null;
   extractedReference: string | null;
@@ -58,6 +79,20 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
             rawBarcode: val,
           };
           console.log('[AutoIdentifier] Matched Telebirr URL from QR:', result);
+          return result;
+        }
+
+        // Check for BOA Slip URL in QR
+        if (val.includes('cs.bankofabyssinia.com/slip/')) {
+          const match = val.match(/trx=([A-Za-z0-9]+)/i);
+          const candidate = match ? match[1].slice(0, -5).toUpperCase() : val;
+          const result: IdentificationResult = {
+            detectedBank: 'boa',
+            extractedReference: candidate,
+            confidence: 'high',
+            rawBarcode: val,
+          };
+          console.log('[AutoIdentifier] Matched BOA Slip URL from QR:', result);
           return result;
         }
 
@@ -141,12 +176,37 @@ export async function identifyReceiptBankAndReference(imageUri: string): Promise
         rawText: text,
       };
     }
+    const boaSlipMatch = text.match(
+      /cs\.bankofabyssinia\.com\/slip\/\?trx=([A-Za-z0-9]+)/i
+    );
 
+    const hasBoaText =
+      lower.includes('bank of abyssinia') ||
+      lower.includes('bankofabyssinia') ||
+      lower.includes('abyssinia bank');
+    if (boaSlipMatch || hasBoaText) {
+      const extractedReference = boaSlipMatch
+        ? boaSlipMatch[1].slice(0, -5).toUpperCase()
+        : extractBoaReferenceFromText(text);
+
+      return {
+        detectedBank: 'boa',
+        extractedReference,
+        confidence: boaSlipMatch
+          ? 'high'
+          : extractedReference
+            ? 'medium'
+            : 'low',
+        rawTextPreview: text.slice(0, 150),
+        rawText: text,
+      };
+    }
   } catch (err) {
     console.error('[AutoIdentifier] OCR text recognition error:', err);
   }
 
   console.log('[AutoIdentifier] STEP 4: Identification ended with no specific bank match');
+
   return {
     detectedBank: null,
     extractedReference: null,
